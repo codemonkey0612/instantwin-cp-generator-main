@@ -1,0 +1,93 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- ヘルパー関数 ---
+    function isAdmin() {
+      return request.auth != null && request.auth.token.firebase.sign_in_provider == 'password';
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isResourceOwner() {
+      return isSignedIn() && request.auth.uid == resource.data.userId;
+    }
+
+    function isCreatingOwnResource() {
+      return isSignedIn() && request.auth.uid == request.resource.data.userId;
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // --- 管理者専用コレクション ---
+    match /clients/{clientId}/{document=**} {
+      allow read, write: if isAdmin();
+    }
+
+    // --- キャンペーンコレクション ---
+    match /campaigns/{campaignId} {
+      allow get: if isAdmin() || resource.data.status == 'published';
+      allow list: if isAdmin();
+
+      // 管理者はキャンペーンの作成と削除が可能
+      allow create, delete: if isAdmin();
+      
+      // 管理者は全てのフィールドを更新可能。
+      // 参加者はトランザクション内で在庫関連のフィールドのみ更新可能。
+      allow update: if isAdmin() || (
+        isSignedIn() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['prizes', 'consolationPrize', 'ticketUsage'])
+      );
+
+      // --- イベントモード用サブコレクション ---
+      match /eventTokens/{tokenId} {
+        allow get: if isSignedIn();
+        // モニター（管理者）のみがトークンを作成可能
+        allow create: if isAdmin();
+        // 参加者（認証済みユーザー）がトークンを消費（削除）できるようにする
+        allow delete: if isSignedIn();
+      }
+
+      match /eventResults/{resultId} {
+        // モニターは結果をリアルタイムで読み取る (コレクション監視のため read が必要)
+        allow read: if true;
+        // 参加者は抽選結果を作成する
+        allow create: if isSignedIn();
+      }
+      
+      // ユーザー固有の上書き設定用サブコレクション
+      match /overrides/{userId} {
+        allow read, write: if isAdmin() || isOwner(userId);
+
+        match /claimedTickets/{ticketToken} {
+          allow read, create: if isAdmin() || isOwner(userId);
+        }
+      }
+    }
+
+    // --- ユーザーデータ関連コレクション ---
+    match /participationRequests/{requestId} {
+      allow read: if isAdmin() || isResourceOwner();
+      allow create: if isCreatingOwnResource();
+      allow update, delete: if isAdmin();
+    }
+
+    match /participants/{participantId} {
+      allow read: if isAdmin() || isResourceOwner();
+      allow create: if isCreatingOwnResource();
+      allow update: if isResourceOwner() &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['shippingAddress', 'couponUsedCount', 'couponUsageHistory']);
+      allow delete: if isAdmin();
+    }
+
+    match /inquiries/{inquiryId} {
+      allow create: if isSignedIn();
+      allow read, delete: if isAdmin();
+    }
+  }
+}
