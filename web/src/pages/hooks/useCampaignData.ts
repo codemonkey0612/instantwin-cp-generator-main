@@ -8,6 +8,7 @@ import type {
 } from "../../types";
 import { useSearchParams } from "react-router-dom";
 import { captureException } from "@sentry/react";
+import { clearAllCampaignAuth, setCampaignAuth } from "../../utils/campaignAuth";
 
 export const useCampaignData = (campaignId: string | undefined) => {
   const [searchParams] = useSearchParams();
@@ -164,19 +165,33 @@ export const useCampaignData = (campaignId: string | undefined) => {
   useEffect(() => {
     const authUnsubscribe = auth.onAuthStateChanged((newUser: any) => {
       setUser(newUser);
+      // Clear campaign auth when user signs out
+      if (!newUser) {
+        clearAllCampaignAuth();
+      }
     });
     return () => authUnsubscribe();
   }, []);
 
+  // Note: LINE OAuth callback is now handled by LineAuthCallback component
+  // This code is kept for backward compatibility but should not be triggered
+  // if the callback route is properly configured
   useEffect(() => {
+    // Only handle callback if we're not on the dedicated callback route
+    if (window.location.pathname === "/auth/line/callback") {
+      return;
+    }
+
     async function createLINEAuthCustomToken(code: string, state: string) {
       try {
-        if (state !== window.localStorage.getItem("lineOAuthState")) {
-          throw new Error("Invalid state parameter");
+        const storedState = window.localStorage.getItem("lineOAuthState");
+        if (!storedState || state !== storedState) {
+          throw new Error("Invalid state parameter - possible CSRF attack");
         }
 
-        const currentUrl = new URL(window.location.href);
-        const redirectUri = currentUrl.origin + currentUrl.pathname;
+        // Use the same redirect URI as in the authorization request
+        const redirectUri = `${window.location.origin}/auth/line/callback`;
+        
         const createToken = functions.httpsCallable(
           "createFirebaseAuthCustomToken",
         );
@@ -186,11 +201,34 @@ export const useCampaignData = (campaignId: string | undefined) => {
         });
         const firebaseCustomToken = result.data.customToken;
         await auth.signInWithCustomToken(firebaseCustomToken);
+        
+        // Get return URL before processing
+        const returnUrl = window.localStorage.getItem("lineReturnUrl");
+        
+        // Mark campaign as authenticated (before redirect)
+        const campaignIdFromUrl = returnUrl ? new URL(returnUrl).pathname.match(/\/campaign\/([^/]+)/)?.[1] : null;
+        const storedCampaignId = window.localStorage.getItem("pendingCampaignAuth");
+        if (storedCampaignId) {
+          setCampaignAuth(storedCampaignId);
+          window.localStorage.removeItem("pendingCampaignAuth");
+        } else if (campaignIdFromUrl) {
+          setCampaignAuth(campaignIdFromUrl);
+        }
+        
+        // Redirect to the stored return URL if it exists
+        if (returnUrl) {
+          // Remove query parameters from return URL to avoid duplicates
+          const returnUrlObj = new URL(returnUrl);
+          returnUrlObj.search = ""; // Clear existing search params
+          window.location.href = returnUrlObj.toString();
+          return; // Exit early since we're redirecting
+        }
       } catch (e) {
         setError("LINEログイン中にエラーが発生しました。");
         captureException(e, { level: "error" });
       } finally {
         window.localStorage.removeItem("lineOAuthState");
+        window.localStorage.removeItem("lineReturnUrl");
       }
     }
 
@@ -202,13 +240,16 @@ export const useCampaignData = (campaignId: string | undefined) => {
           captureException(error, { level: "error" });
         })
         .finally(() => {
-          setLoading(false);
-          const url = new URL(window.location.href);
-          url.searchParams.delete("code");
-          url.searchParams.delete("state");
-          url.searchParams.delete("error");
-          url.searchParams.delete("error_description");
-          window.history.replaceState({}, document.title, url.toString());
+          // Only clean up URL if we're not redirecting
+          if (!window.localStorage.getItem("lineReturnUrl")) {
+            setLoading(false);
+            const url = new URL(window.location.href);
+            url.searchParams.delete("code");
+            url.searchParams.delete("state");
+            url.searchParams.delete("error");
+            url.searchParams.delete("error_description");
+            window.history.replaceState({}, document.title, url.toString());
+          }
         });
     }
   }, [code, state]);

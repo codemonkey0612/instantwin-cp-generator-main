@@ -3,6 +3,7 @@ import { firebase, auth, googleProvider } from "../../firebase";
 import type { Campaign, AuthProviders } from "../../types";
 import Spinner from "../Spinner";
 import { captureException } from "@sentry/react";
+import { setCampaignAuth, storeCampaignIdForAuth } from "../../utils/campaignAuth";
 // import { useParticipationTicket } from "../../pages/hooks/useParticipationTicket";
 
 interface AuthFlowProps {
@@ -10,6 +11,7 @@ interface AuthFlowProps {
   isSavingResult?: boolean;
   closeModal?: () => void;
   lastTicketToken?: string | null;
+  setModalStep?: (step: "closed" | "auth" | "confirm" | "participating" | "result") => void;
 }
 
 const providerDetails = {
@@ -32,6 +34,7 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
   campaign,
   isSavingResult = false,
   closeModal,
+  setModalStep,
   // lastTicketToken,
 }) => {
   const [authView, setAuthView] = useState<
@@ -74,47 +77,73 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
     setAuthError(null);
     setIsAuthLoading(true);
     try {
-      if (!auth.currentUser) {
-        await auth.signInWithRedirect(provider);
-
-        // if (lastTicketToken && user) {
-        //   await claimTicket(user.uid, campaign, lastTicketToken);
-        // }
-      } else {
-        try {
-          await auth.currentUser.linkWithRedirect(provider);
-        } catch (err: any) {
-          if (
-            err.code === "auth/credential-already-in-use" ||
-            err.code === "auth/email-already-in-use"
-          ) {
-            if (err.credential) {
-              await auth.signInWithCredential(err.credential);
-
-              // if (lastTicketToken && user) {
-              //   await claimTicket(user.uid, campaign, lastTicketToken);
-              // }
-            } else {
-              throw err;
-            }
-          } else {
-            throw err;
-          }
-        }
+      // Store campaign ID before authentication so we can mark it as authenticated after callback
+      if (campaign.id) {
+        storeCampaignIdForAuth(campaign.id);
+        console.log("Stored campaign ID for auth:", campaign.id);
       }
 
-      closeModal?.();
-    } catch (error: any) {
-      if (
-        error.code !== "auth/popup-closed-by-user" &&
-        error.code !== "auth/cancelled-popup-request"
-      ) {
-        setAuthError("認証に失敗しました。");
+      const currentUser = auth.currentUser;
+      console.log("Current user before auth:", currentUser?.uid, currentUser?.isAnonymous);
+      
+      // If there's an anonymous user, we need to sign out first before authenticating
+      // Otherwise, Firebase might not complete the authentication properly
+      if (currentUser && currentUser.isAnonymous) {
+        console.log("Signing out anonymous user before auth");
+        await auth.signOut();
+      }
+
+      // Use popup for localhost (more reliable) or redirect for production
+      const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      
+      if (isLocalhost) {
+        // Use popup for local development - more reliable than redirect
+        console.log("Using popup sign-in (localhost detected) with provider:", provider.providerId);
+        const result = await auth.signInWithPopup(provider);
+        console.log("Popup sign-in successful:", result.user?.uid, result.user?.email);
+        
+        // Mark campaign as authenticated after successful popup sign-in
+        if (campaign.id && result.user && !result.user.isAnonymous) {
+          setCampaignAuth(campaign.id);
+          console.log("Campaign auth set for:", campaign.id);
+          setModalStep?.("confirm");
+          closeModal?.();
+        }
+        setIsAuthLoading(false);
       } else {
+        // Use redirect for production
+        console.log("Initiating redirect sign-in with provider:", provider.providerId);
+        console.log("Current URL before redirect:", window.location.href);
+        
+        await auth.signInWithRedirect(provider);
+        
+        // The redirect will happen, so we don't need to do anything else here
+        // The authentication will be handled in the redirect callback (getRedirectResult)
+        console.log("Redirect initiated - page should redirect now");
+        // Note: Don't close modal or set loading to false here because we're redirecting
+        // The page will reload after redirect
+      }
+    } catch (error: any) {
+      console.error("Sign-in error:", error);
+      console.error("Error code:", error.code, "Error message:", error.message);
+      setIsAuthLoading(false);
+      
+      if (
+        error.code === "auth/popup-closed-by-user" ||
+        error.code === "auth/cancelled-popup-request"
+      ) {
+        // User cancelled - this is not an error, just clear the stored campaign ID
+        if (campaign.id) {
+          window.localStorage.removeItem("pendingCampaignAuth");
+        }
+      } else {
+        setAuthError("認証に失敗しました。");
+        // Clear stored campaign ID on error
+        if (campaign.id) {
+          window.localStorage.removeItem("pendingCampaignAuth");
+        }
         captureException(error, { level: "error" });
       }
-    } finally {
-      setIsAuthLoading(false);
     }
   };
 
@@ -123,39 +152,110 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
   };
 
   const handleLineSignIn = async () => {
-    // const provider = new firebase.auth.OAuthProvider("oidc.line");
-    // provider.setCustomParameters({
-    //   bot_prompt: "aggressive",
-    // });
-    // handleSocialSignIn(provider);
-    const clientId = "2008069638";
-    const currentUrl = new URL(window.location.href);
-    const redirectUri = encodeURIComponent(
-      currentUrl.origin + currentUrl.pathname,
-    );
-    const state = Math.random().toString(36).substring(2);
-    const lineAuthorizeUrl = `https://access.line.me/oauth2/v2.1/authorize?response_type=code&client_id=${clientId}&redirect_uri=${redirectUri}&state=${state}&scope=profile%20openid&prompt=consent&bot_prompt=aggressive`;
+    try {
+      // Store the current URL to redirect back after authentication
+      const currentUrl = window.location.href;
+      window.localStorage.setItem("lineReturnUrl", currentUrl);
 
-    window.localStorage.setItem("lineOAuthState", state);
-    window.location.href = lineAuthorizeUrl;
+      // Store campaign ID for authentication association
+      if (campaign.id) {
+        storeCampaignIdForAuth(campaign.id);
+      }
+
+      // Use a fixed callback URL (must be registered in LINE Developers console)
+      // This should be: https://yourdomain.com/auth/line/callback
+      const redirectUri = `${window.location.origin}/auth/line/callback`;
+      
+      // LINE Channel ID - should be moved to environment variable
+      const clientId = "2008069638";
+      
+      // Generate state for CSRF protection
+      const state = Math.random().toString(36).substring(2, 15) + 
+                    Math.random().toString(36).substring(2, 15);
+      
+      // Build LINE authorization URL
+      const params = new URLSearchParams({
+        response_type: "code",
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        state: state,
+        scope: "profile openid",
+        prompt: "consent",
+        bot_prompt: "aggressive",
+      });
+      
+      const lineAuthorizeUrl = `https://access.line.me/oauth2/v2.1/authorize?${params.toString()}`;
+
+      // Store state for verification
+      window.localStorage.setItem("lineOAuthState", state);
+      
+      // Redirect to LINE authorization
+      window.location.href = lineAuthorizeUrl;
+    } catch (error: any) {
+      setAuthError("LINEログインの開始に失敗しました。");
+      captureException(error, { level: "error" });
+    }
   };
 
   const handleSendEmailLink = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
     setIsAuthLoading(true);
-    const actionCodeSettings = {
-      url: window.location.href,
-      handleCodeInApp: true,
-    };
+    
+    // Configure action code settings for email link
+    // The URL must be in the authorized domains list in Firebase Console
+    // For localhost, use the full URL with the campaign path
+    // For production, use the production URL
+    let continueUrl = window.location.href;
+    
+    // Ensure the URL doesn't have query parameters that might interfere
     try {
+      const url = new URL(continueUrl);
+      // Remove any existing query params that might interfere with the email link
+      url.search = '';
+      continueUrl = url.toString();
+    } catch (e) {
+      // If URL parsing fails, use the original href
+      console.warn("Failed to parse URL for email link:", e);
+    }
+    
+    const actionCodeSettings = {
+      url: continueUrl,
+      handleCodeInApp: true,
+      // Optional: Set dynamic link domain if using Firebase Dynamic Links
+      // dynamicLinkDomain: 'your-app.page.link',
+    };
+    
+    console.log("Sending email link to:", emailForLink);
+    console.log("Action code settings:", actionCodeSettings);
+    
+    try {
+      // Store campaign ID for authentication association
+      if (campaign.id) {
+        storeCampaignIdForAuth(campaign.id);
+        console.log("Stored campaign ID for email auth:", campaign.id);
+      }
+      
       await auth.sendSignInLinkToEmail(emailForLink, actionCodeSettings);
+      console.log("Email link sent successfully");
+      
       window.localStorage.setItem("emailForSignIn", emailForLink);
       setAuthView("email_sent");
     } catch (error: any) {
-      setAuthError(
-        "ログインリンクの送信に失敗しました: " + (error.message || ""),
-      );
+      console.error("Email link send error:", error);
+      console.error("Error code:", error.code, "Error message:", error.message);
+      
+      // Provide more specific error messages
+      let errorMessage = "ログインリンクの送信に失敗しました。";
+      if (error.code === "auth/invalid-email") {
+        errorMessage = "無効なメールアドレスです。";
+      } else if (error.code === "auth/too-many-requests") {
+        errorMessage = "リクエストが多すぎます。しばらく待ってから再度お試しください。";
+      } else if (error.message) {
+        errorMessage += " " + error.message;
+      }
+      
+      setAuthError(errorMessage);
       captureException(error, { level: "error" });
     } finally {
       setIsAuthLoading(false);
@@ -198,7 +298,14 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
     setAuthError(null);
     setIsAuthLoading(true);
     try {
-      await confirmationResult.confirm(verificationCode);
+      const userCredential = await confirmationResult.confirm(verificationCode);
+      // Mark campaign as authenticated after successful SMS verification
+      if (campaign.id && userCredential.user && !userCredential.user.isAnonymous) {
+        setCampaignAuth(campaign.id);
+        // Close modal and proceed to next step after successful authentication
+        closeModal?.();
+        setModalStep?.("confirm");
+      }
     } catch (error) {
       setAuthError("認証コードが正しくありません。");
       setIsAuthLoading(false);
@@ -300,16 +407,25 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
 
       {authView === "email_sent" && (
         <div className="text-center space-y-4 animate-fade-in">
-          <h3 className="font-semibold text-slate-800">
-            メールを確認してください
-          </h3>
-          <p className="text-sm text-slate-600">
-            {emailForLink}{" "}
-            に送信されたメールを開き、中のリンクをクリックして認証を完了してください。
-          </p>
-          <p className="text-xs text-slate-500">
-            メールが届かない場合は、迷惑メールフォルダもご確認ください。
-          </p>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+            <h3 className="font-semibold text-slate-800 mb-2">
+              📧 メールを確認してください
+            </h3>
+            <p className="text-sm text-slate-600 mb-2">
+              <strong>{emailForLink}</strong>{" "}
+              に送信されたメールを開き、中のリンクをクリックして認証を完了してください。
+            </p>
+            <div className="bg-yellow-50 border border-yellow-200 rounded p-3 mt-3">
+              <p className="text-xs text-yellow-800 font-semibold mb-1">
+                ⚠️ メールが届かない場合:
+              </p>
+              <ul className="text-xs text-yellow-700 text-left space-y-1 list-disc list-inside">
+                <li>迷惑メール（スパム）フォルダをご確認ください</li>
+                <li>数分待ってから再度確認してください</li>
+                <li>メールアドレスが正しいか確認してください</li>
+              </ul>
+            </div>
+          </div>
           <button
             onClick={() => setAuthView("email_entry")}
             className="text-sm text-slate-600 hover:underline"

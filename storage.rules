@@ -5,13 +5,22 @@ rules_version = '2';
 //    /databases/(default)/documents/users/$(request.auth.uid)).data.isAdmin;
 service firebase.storage {
   match /b/{bucket}/o {
+    // Allow participants to upload their own approval form files
+    match /campaigns/{campaignId}/approvals/{userId}/{allPaths=**} {
+      allow write: if request.auth != null && request.auth.uid == userId;
+      allow read: if request.auth != null && (
+        request.auth.uid == userId ||
+        firestore.get(/databases/(default)/documents/campaigns/$(campaignId)).data.ownerId == request.auth.uid
+      );
+    }
+
     match /campaigns/{campaignId}/{allPaths=**} {
-      // クライアントの所有者のみが、自分のバケット内にアップロードできる
+      // Only the campaign owner can write to general campaign storage paths
       allow write: if firestore.get(
         /databases/(default)/documents/campaigns/$(campaignId)
       ).data.ownerId == request.auth.uid;
 
-      // 読み取りは全員可能（公開用バケットとして利用する場合）
+      // Allow public read access for campaign assets
       allow read: if true;
     }
   }

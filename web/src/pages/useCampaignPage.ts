@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useMemo } from "react";
+import { useEffect, useCallback, useMemo, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { firebase, auth } from "../firebase";
 import type { Prize, Participant } from "../types";
@@ -12,6 +12,11 @@ import { useCampaignData } from "./hooks/useCampaignData";
 import { useCampaignState } from "./hooks/useCampaignState";
 import { useCampaignActions } from "./hooks/useCampaignActions";
 import { captureException } from "@sentry/react";
+import { 
+  isAuthenticatedForCampaign, 
+  setCampaignAuth, 
+  getAndClearStoredCampaignId
+} from "../utils/campaignAuth";
 
 export type PresentationTexts = {
   multiParticipationButton: (n: number) => string;
@@ -35,6 +40,15 @@ export type PresentationTexts = {
 export const useCampaignPage = () => {
   const { campaignId } = useParams<{ campaignId: string }>();
   const navigate = useNavigate();
+  
+  // Clear campaign auth when switching to a different campaign
+  useEffect(() => {
+    if (campaignId) {
+      // When user navigates to a campaign, check if they were authenticated for a different campaign
+      // and clear any previous campaign auth if needed (this ensures fresh auth per campaign)
+      // Note: We don't clear here automatically - we let the auth check handle requiring re-auth
+    }
+  }, [campaignId]);
 
   // --- DATA HOOK ---
   const {
@@ -192,6 +206,9 @@ export const useCampaignPage = () => {
   const { modalStep, setModalStep, promptToSaveResult, closeModal } =
     modalState;
 
+  // Ref to track if redirect result has been processed (only process once)
+  const redirectProcessedRef = useRef(false);
+  
   const continueParticipationFlow = useCallback(() => {
     if (!user) {
       return;
@@ -215,7 +232,13 @@ export const useCampaignPage = () => {
       return;
     }
 
-    if (campaign?.participantAuthMethod === "required" && !isLoggedIn) {
+    // Check if campaign requires authentication and if user is authenticated for this campaign
+    const requiresAuth = campaign?.participantAuthMethod === "required";
+    const isAuthenticatedForThisCampaign = campaignId 
+      ? isAuthenticatedForCampaign(campaignId)
+      : false;
+
+    if (requiresAuth && (!isLoggedIn || !isAuthenticatedForThisCampaign)) {
       setModalStep("auth");
     } else {
       const hasParticipatedBefore = allParticipantRecords.length > 0;
@@ -233,6 +256,7 @@ export const useCampaignPage = () => {
   }, [
     user,
     campaign,
+    campaignId,
     userParticipationRequest,
     hasTicket,
     allParticipantRecords,
@@ -255,6 +279,15 @@ export const useCampaignPage = () => {
             isParticipating.current = true;
             await auth.signInWithEmailLink(email, window.location.href);
             window.localStorage.removeItem("emailForSignIn");
+            
+            // Mark campaign as authenticated after email link sign-in
+            const storedCampaignId = getAndClearStoredCampaignId();
+            if (storedCampaignId && campaignId === storedCampaignId) {
+              setCampaignAuth(campaignId);
+            } else if (campaignId) {
+              setCampaignAuth(campaignId);
+            }
+            
             if (window.history?.replaceState) {
               window.history.replaceState(
                 {},
@@ -270,6 +303,36 @@ export const useCampaignPage = () => {
     };
     completeSignInWithEmailLink();
 
+    // Check if user is authenticated for this campaign (check this first, before isParticipating check)
+    const isAuthenticatedForThisCampaign = campaignId 
+      ? isAuthenticatedForCampaign(campaignId)
+      : false;
+    const isLoggedIn = user && !user.isAnonymous;
+    const requiresAuth = campaign?.participantAuthMethod === "required";
+
+    // Debug logging
+    if (modalStep === "auth" && requiresAuth) {
+      console.log("Auth check:", {
+        isLoggedIn,
+        isAuthenticatedForThisCampaign,
+        campaignId,
+        userId: user?.uid,
+        isAnonymous: user?.isAnonymous,
+      });
+    }
+
+    // If user is authenticated and modal is showing auth, proceed to next step immediately
+    if (
+      modalStep === "auth" &&
+      requiresAuth &&
+      isLoggedIn &&
+      isAuthenticatedForThisCampaign
+    ) {
+      console.log("Proceeding to confirm step - user is authenticated");
+      modalState.setIsAuthLoading(false);
+      setModalStep("confirm");
+    }
+
     if (isParticipating.current && user) {
       isParticipating.current = false;
 
@@ -277,8 +340,14 @@ export const useCampaignPage = () => {
         modalStep === "auth" &&
         campaign?.participantAuthMethod === "required"
       ) {
-        modalState.setIsAuthLoading(false);
-        setModalStep("confirm");
+        // If user just authenticated and is now authenticated for this campaign, proceed
+        if (isLoggedIn && isAuthenticatedForThisCampaign) {
+          modalState.setIsAuthLoading(false);
+          setModalStep("confirm");
+        } else {
+          // Still not authenticated, keep showing auth modal
+          modalState.setIsAuthLoading(false);
+        }
       } else if (promptToSaveResult) {
         closeModal();
         loadParticipantData();
@@ -291,6 +360,7 @@ export const useCampaignPage = () => {
   }, [
     user,
     campaign,
+    campaignId,
     modalStep,
     promptToSaveResult,
     navigate,
@@ -305,7 +375,237 @@ export const useCampaignPage = () => {
     hasTicket,
     userParticipationRequest,
     continueParticipationFlow,
+    isAuthenticatedForCampaign,
+    setCampaignAuth,
+    getAndClearStoredCampaignId,
   ]);
+
+  // Handle Firebase Auth redirect result (for Google sign-in, etc.)
+  // This must be called once when the page loads after redirect
+  useEffect(() => {
+    if (redirectProcessedRef.current) return;
+    
+    const handleRedirectResult = async () => {
+      try {
+        console.log("Checking for redirect result...");
+        console.log("Current URL:", window.location.href);
+        console.log("URL search params:", window.location.search);
+        console.log("Current user before getRedirectResult:", auth.currentUser?.uid, auth.currentUser?.isAnonymous);
+        
+        // Check if we have a stored campaign ID (meaning we initiated auth)
+        const storedCampaignId = window.localStorage.getItem("pendingCampaignAuth");
+        console.log("Stored campaign ID (pendingCampaignAuth):", storedCampaignId);
+        
+        // Check if there are any URL parameters that indicate we're coming from a redirect
+        const urlParams = new URLSearchParams(window.location.search);
+        const hasRedirectParams = urlParams.has('apiKey') || urlParams.has('mode') || 
+                                  urlParams.has('oobCode') || urlParams.has('continueUrl') ||
+                                  urlParams.has('code') || urlParams.has('state');
+        
+        // If we have a stored campaign ID but no redirect params and no user,
+        // this is likely a stale stored ID from a previous failed attempt
+        // Clear it immediately to allow new login attempts
+        if (storedCampaignId && !hasRedirectParams && !auth.currentUser) {
+          console.log("Clearing stale stored campaign ID - no active redirect detected");
+          console.log("This allows new login attempts to proceed");
+          window.localStorage.removeItem("pendingCampaignAuth");
+          // Don't return here - still check for redirect result in case auth state updates
+        }
+        
+        // Wait for auth to be ready (sometimes it takes a moment)
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        const result = await auth.getRedirectResult();
+        console.log("Redirect result:", result);
+        console.log("Current user after getRedirectResult:", auth.currentUser?.uid, auth.currentUser?.isAnonymous);
+        
+        if (result.user && !result.user.isAnonymous) {
+          console.log("Redirect result: User authenticated", result.user.uid, result.user.email);
+          // User successfully signed in via redirect
+          const clearedCampaignId = getAndClearStoredCampaignId();
+          console.log("Cleared stored campaign ID:", clearedCampaignId, "Current campaign ID:", campaignId);
+          
+          // Always set campaign auth for the current campaign if we're on a campaign page
+          if (campaignId) {
+            setCampaignAuth(campaignId);
+            console.log("Campaign auth set for:", campaignId);
+            // Mark that we're participating after successful auth
+            isParticipating.current = true;
+          } else if (clearedCampaignId) {
+            // If we have a stored campaign ID but not on a campaign page, set it anyway
+            setCampaignAuth(clearedCampaignId);
+            console.log("Campaign auth set for stored ID:", clearedCampaignId);
+            isParticipating.current = true;
+          }
+          redirectProcessedRef.current = true;
+        } else if (result.user && result.user.isAnonymous) {
+          console.log("Redirect result: Got anonymous user (unexpected)");
+          redirectProcessedRef.current = true;
+        } else {
+          console.log("Redirect result: No user - result:", result);
+          console.log("Stored campaign ID still exists:", window.localStorage.getItem("pendingCampaignAuth"));
+          // getRedirectResult returned null - this is common if:
+          // 1. No redirect happened
+          // 2. Redirect was already processed
+          // 3. Authorized domains not configured (localhost not in authorized domains)
+          // 4. Redirect was cancelled or failed
+          
+          // Check if we're on localhost and might have domain issues
+          const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+          if (isLocalhost && storedCampaignId) {
+            console.warn("⚠️ Running on localhost - make sure 'localhost' is added to Firebase Authorized Domains");
+            console.warn("Go to Firebase Console → Authentication → Settings → Authorized domains");
+          }
+          
+          // Check if there are any URL parameters that might indicate a failed redirect
+          const urlParams = new URLSearchParams(window.location.search);
+          const hasAuthParams = urlParams.has('error') || urlParams.has('code') || urlParams.has('state');
+          if (hasAuthParams) {
+            console.log("URL has auth-related parameters:", Object.fromEntries(urlParams.entries()));
+          }
+          
+          // If we have a stored campaign ID but no user and no redirect result,
+          // and we're not coming from a redirect (no auth params), the redirect might have failed
+          // Clear the stored campaign ID after a delay to allow auth state to update
+          if (storedCampaignId && !hasAuthParams) {
+            console.log("Have stored campaign ID but no redirect result and no auth params - redirect may have failed");
+            console.log("This could mean:");
+            console.log("1. The redirect was cancelled by the user");
+            console.log("2. The redirect failed (e.g., 'page not found' error)");
+            console.log("3. The redirect completed but Firebase didn't process it");
+            // Wait a bit for auth state to potentially update
+            setTimeout(() => {
+              const currentUser = auth.currentUser;
+              if (!currentUser || currentUser.isAnonymous) {
+                console.log("Still no authenticated user after delay - clearing stored campaign ID");
+                window.localStorage.removeItem("pendingCampaignAuth");
+                // If we're still on the auth modal step, we should show an error or reset
+                if (modalStep === "auth") {
+                  console.log("User is still on auth step - they may need to try logging in again");
+                }
+              }
+            }, 2000);
+          }
+          
+          // We'll rely on onAuthStateChanged fallback instead
+          // But also check if user is already authenticated (maybe from previous session)
+          if (storedCampaignId) {
+            console.log("Have stored campaign ID but no redirect result - will wait for auth state change");
+            // Also check immediately if user is already authenticated
+            const currentUser = auth.currentUser;
+            if (currentUser && !currentUser.isAnonymous) {
+              console.log("User is already authenticated - setting campaign auth now");
+              if (campaignId && campaignId === storedCampaignId) {
+                setCampaignAuth(campaignId);
+                isParticipating.current = true;
+                window.localStorage.removeItem("pendingCampaignAuth");
+              } else if (campaignId) {
+                setCampaignAuth(campaignId);
+                isParticipating.current = true;
+                window.localStorage.removeItem("pendingCampaignAuth");
+              }
+            }
+          }
+          redirectProcessedRef.current = true;
+        }
+      } catch (error: any) {
+        // Redirect result might fail if there's no pending redirect
+        // This is expected and not an error, but log it for debugging
+        console.error("Redirect result error:", error);
+        if (error.code !== "auth/operation-not-allowed") {
+          console.log("Redirect result error details:", error.code, error.message);
+        }
+        redirectProcessedRef.current = true;
+      }
+    };
+    
+    // Call immediately on mount
+    handleRedirectResult();
+  }, [campaignId, setCampaignAuth, getAndClearStoredCampaignId]);
+
+  // Also listen for auth state changes to catch authentication that happens via redirect
+  // This is a fallback in case getRedirectResult doesn't work
+  // Use a ref to track the previous user state
+  const previousUserRef = useRef<any>(null);
+  const authStateChangeProcessedRef = useRef(false);
+  
+  useEffect(() => {
+    const unsubscribe = auth.onAuthStateChanged((newUser) => {
+      const previousUser = previousUserRef.current;
+      previousUserRef.current = newUser;
+      
+      console.log("Auth state changed:", {
+        previousUser: previousUser?.uid || "null",
+        previousIsAnonymous: previousUser?.isAnonymous,
+        newUser: newUser?.uid || "null",
+        newIsAnonymous: newUser?.isAnonymous,
+        hasStoredCampaignId: !!window.localStorage.getItem("pendingCampaignAuth"),
+      });
+      
+      // Only process if we have a stored campaign ID (meaning we initiated auth)
+      const storedCampaignId = window.localStorage.getItem("pendingCampaignAuth");
+      
+      // Check if user just authenticated (was anonymous/null, now authenticated)
+      const justAuthenticated = 
+        (!previousUser || previousUser.isAnonymous) && 
+        newUser && 
+        !newUser.isAnonymous;
+      
+      if (storedCampaignId && justAuthenticated && !authStateChangeProcessedRef.current) {
+        console.log("Auth state changed: User just authenticated via redirect", newUser.uid, newUser.email);
+        console.log("Stored campaign ID:", storedCampaignId, "Current campaign ID:", campaignId);
+        
+        authStateChangeProcessedRef.current = true;
+        
+        if (campaignId && campaignId === storedCampaignId) {
+          setCampaignAuth(campaignId);
+          console.log("Campaign auth set via auth state change:", campaignId);
+          isParticipating.current = true;
+          // Clear the stored campaign ID
+          window.localStorage.removeItem("pendingCampaignAuth");
+        } else if (campaignId) {
+          // If we're on a campaign page but stored ID doesn't match, use current campaign
+          setCampaignAuth(campaignId);
+          console.log("Campaign auth set for current campaign:", campaignId);
+          isParticipating.current = true;
+          window.localStorage.removeItem("pendingCampaignAuth");
+        } else if (storedCampaignId) {
+          // Use stored campaign ID if we're not on a campaign page
+          setCampaignAuth(storedCampaignId);
+          console.log("Campaign auth set for stored ID:", storedCampaignId);
+          isParticipating.current = true;
+          window.localStorage.removeItem("pendingCampaignAuth");
+        }
+      } else if (!newUser) {
+        // User signed out, reset flags
+        authStateChangeProcessedRef.current = false;
+      } else if (newUser && !newUser.isAnonymous && storedCampaignId && !authStateChangeProcessedRef.current) {
+        // User is already authenticated but we have a stored campaign ID
+        // This might happen if the page reloaded after auth but before we processed it
+        console.log("User already authenticated with stored campaign ID - processing now");
+        authStateChangeProcessedRef.current = true;
+        
+        if (campaignId && campaignId === storedCampaignId) {
+          setCampaignAuth(campaignId);
+          console.log("Campaign auth set for already-authenticated user:", campaignId);
+          isParticipating.current = true;
+          window.localStorage.removeItem("pendingCampaignAuth");
+        } else if (campaignId) {
+          setCampaignAuth(campaignId);
+          console.log("Campaign auth set for current campaign (already-authenticated):", campaignId);
+          isParticipating.current = true;
+          window.localStorage.removeItem("pendingCampaignAuth");
+        } else if (storedCampaignId) {
+          setCampaignAuth(storedCampaignId);
+          console.log("Campaign auth set for stored ID (already-authenticated):", storedCampaignId);
+          isParticipating.current = true;
+          window.localStorage.removeItem("pendingCampaignAuth");
+        }
+      }
+    });
+    
+    return unsubscribe;
+  }, [campaignId, setCampaignAuth]);
 
   useEffect(() => {
     if (modalState.authView === "sms_phone") {
@@ -329,7 +629,18 @@ export const useCampaignPage = () => {
   const handleAuthInitiation = async () => {
     modalState.setAuthError(null);
 
+    // Check if campaign requires authentication and if user is authenticated for this campaign
+    const requiresAuth = campaign?.participantAuthMethod === "required";
+    const isAuthenticatedForThisCampaign = campaignId 
+      ? isAuthenticatedForCampaign(campaignId)
+      : false;
+
     if (user) {
+      // If user is logged in but campaign requires auth and they're not authenticated for this campaign
+      if (requiresAuth && !isAuthenticatedForThisCampaign) {
+        setModalStep("auth");
+        return;
+      }
       continueParticipationFlow();
       return;
     }

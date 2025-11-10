@@ -7,7 +7,9 @@ import "firebase/compat/functions";
 // Your web app's Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyA3DxxmUyHgRj9Jyx8FEfJl28uohvmakE4",
-  authDomain: "instantwin-app.com",
+  // Use the default Firebase auth domain for proper redirect handling
+  // For production, you can use a custom domain if it's properly configured in Firebase Hosting
+  authDomain: "instantwin-cp-generator.firebaseapp.com",
   projectId: "instantwin-cp-generator",
   storageBucket: "instantwin-cp-generator.firebasestorage.app",
   messagingSenderId: "540864841035",
@@ -24,7 +26,15 @@ export const db = firebase.firestore();
 export const Timestamp = firebase.firestore.Timestamp;
 export const FieldValue = firebase.firestore.FieldValue;
 export const auth = firebase.auth();
+
+// Configure auth settings for redirects
+auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+
 export const googleProvider = new firebase.auth.GoogleAuthProvider();
+// Add additional scopes if needed
+googleProvider.addScope('profile');
+googleProvider.addScope('email');
+
 export const storage = firebase.storage();
 export const functions = firebase.app().functions("asia-northeast1");
 

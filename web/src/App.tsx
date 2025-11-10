@@ -19,6 +19,7 @@ const MonitorPage = lazy(() => import("./pages/MonitorPage"));
 const EventParticipationPage = lazy(
   () => import("./pages/EventParticipationPage"),
 );
+const LineAuthCallback = lazy(() => import("./pages/LineAuthCallback"));
 
 const AdminLayout: React.FC = () => (
   <div className="min-h-screen bg-slate-50 text-slate-800">
@@ -52,6 +53,7 @@ const App: React.FC = () => {
               path="/event/:campaignId"
               element={<EventParticipationPage />}
             />
+            <Route path="/auth/line/callback" element={<LineAuthCallback />} />
             <Route path="/admin/login" element={<LoginPage />} />
             <Route path="/admin/registration" element={<RegisterPage />} />
 

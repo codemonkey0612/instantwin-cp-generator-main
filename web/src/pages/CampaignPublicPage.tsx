@@ -30,6 +30,17 @@ const CampaignPublicPage: React.FC = () => {
     presentationTexts,
   } = hookProps;
 
+  // Update document title to campaign name
+  useEffect(() => {
+    const previousTitle = document.title;
+    if (campaign?.name) {
+      document.title = campaign.name;
+    }
+    return () => {
+      document.title = previousTitle;
+    };
+  }, [campaign?.name]);
+
   // Create a "stable" version of the records to prevent the background from updating while the modal is open.
   const [stableParticipantRecords, setStableParticipantRecords] = useState(
     allParticipantRecords,

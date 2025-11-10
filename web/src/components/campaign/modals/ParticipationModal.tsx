@@ -144,6 +144,7 @@ const ParticipationModal: React.FC<ParticipationModalProps> = (props) => {
             lastTicketToken={lastTicketToken}
             isSavingResult={promptToSaveResult}
             closeModal={closeModal}
+            setModalStep={setModalStep}
           />
         );
 
