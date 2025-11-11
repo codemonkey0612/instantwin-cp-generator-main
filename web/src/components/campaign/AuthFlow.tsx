@@ -23,12 +23,24 @@ const providerDetails = {
     hover: "hover:bg-slate-600",
   },
   sms: { name: "電話番号", bg: "bg-blue-500", hover: "hover:bg-blue-600" },
-};
+} as const;
 
-const enabledProviders = (authProviders: AuthProviders | undefined) =>
-  Object.entries(authProviders || {})
-    .filter(([_, v]) => v)
-    .map(([k]) => k as keyof AuthProviders);
+// Enforce a deterministic provider order
+const PROVIDER_ORDER: Array<keyof typeof providerDetails> = [
+  "google",
+  "line",
+  "email",
+  "sms",
+];
+
+const enabledProviders = (authProviders: AuthProviders | undefined) => {
+  const enabledSet = new Set(
+    Object.entries(authProviders || {})
+      .filter(([_, v]) => Boolean(v))
+      .map(([k]) => k as keyof AuthProviders),
+  );
+  return PROVIDER_ORDER.filter((key) => enabledSet.has(key as keyof AuthProviders));
+};
 
 const AuthFlow: React.FC<AuthFlowProps> = ({
   campaign,
@@ -167,7 +179,7 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
       const redirectUri = `${window.location.origin}/auth/line/callback`;
       
       // LINE Channel ID - should be moved to environment variable
-      const clientId = "2008069638";
+      const clientId = "2008453262";
       
       // Generate state for CSRF protection
       const state = Math.random().toString(36).substring(2, 15) + 

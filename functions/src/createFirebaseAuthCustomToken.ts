@@ -43,7 +43,7 @@ export const createFirebaseAuthCustomToken = functions.https.onCall<{
   {
     secrets: ["LINE_CHANNEL_ID", "LINE_CHANNEL_SECRET"],
   },
-  async (callableRequest) => {image.png
+  async (callableRequest) => {
     if (!process.env.LINE_CHANNEL_ID || !process.env.LINE_CHANNEL_SECRET) {
       throw new Error(
         "LINE_CHANNEL_ID または LINE_CHANNEL_SECRET が設定されていません。",

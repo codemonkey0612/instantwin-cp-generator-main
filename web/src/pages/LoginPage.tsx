@@ -52,8 +52,8 @@ const LoginPage: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col justify-center items-center p-4">
       <div className="max-w-md w-full bg-white p-8 rounded-xl shadow-lg">
-        <h1 className="text-2xl font-bold text-center text-slate-800 mb-6">
-          管理画面ログイン
+        <h1 className="text-xl font-bold text-center text-slate-800 mb-6">
+        インスタントウィン管理画面｜ログイン
         </h1>
         {error && (
           <div

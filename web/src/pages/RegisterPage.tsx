@@ -59,7 +59,7 @@ const RegisterPage: React.FC = () => {
     <div className="min-h-screen bg-slate-50 flex flex-col justify-center items-center p-4">
       <div className="max-w-md w-full bg-white p-8 rounded-xl shadow-lg">
         <h1 className="text-2xl font-bold text-center text-slate-800 mb-6">
-          管理者アカウント作成
+        インスタントウィン管理画面｜管理者登録
         </h1>
         {error && (
           <div className="bg-red-100 border border-red-300 text-red-800 text-sm p-3 rounded-md mb-4" role="alert">
