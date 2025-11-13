@@ -104,6 +104,16 @@ const ParticipationArea: React.FC<ParticipationAreaProps> = ({
                 <p className="text-red-700 text-sm font-medium">{authError}</p>
               </div>
             )}
+            {timeLeftMessage && (
+              <div className="text-center p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                <p className="text-amber-800 font-medium text-sm">
+                  {timeLeftMessage}
+                </p>
+                <p className="text-amber-700 text-xs mt-1">
+                  参加間隔制限により、上記の時間まで参加できません。
+                </p>
+              </div>
+            )}
             <div>
               <button
                 onClick={handleAuthInitiation}
@@ -120,7 +130,7 @@ const ParticipationArea: React.FC<ParticipationAreaProps> = ({
                     : "hover:opacity-90 hover:shadow-xl transform hover:-translate-y-1"
                 }`}
               >
-                {timeLeftMessage || participationButtonText}
+                {timeLeftMessage ? "参加間隔制限中" : participationButtonText}
               </button>
               {availableChances > 1 && !timeLeftMessage && (
                 <div className="mt-3 text-center">
