@@ -75,6 +75,13 @@ const ParticipationArea: React.FC<ParticipationAreaProps> = ({
     }
   }
 
+  // Determine if participation is unlimited
+  // Unlimited: participationLimitPerUser is 0 or undefined, and no ticket/form approval required
+  const isUnlimited = 
+    (campaign.participationLimitPerUser === 0 || !campaign.participationLimitPerUser) &&
+    !campaign.requireTicket &&
+    !campaign.requireFormApproval;
+
   return (
     <>
       {hasReachedLimit ? (
@@ -162,6 +169,7 @@ const ParticipationArea: React.FC<ParticipationAreaProps> = ({
                 )}
               {user &&
                 !timeLeftMessage &&
+                !isUnlimited &&
                 (!campaign.requireFormApproval ||
                   userParticipationRequest?.status === "approved") && (
                   <p className="text-center text-sm text-slate-500 mt-2">
