@@ -392,14 +392,7 @@ const CampaignEdit: React.FC = () => {
   const [showFunctionCode, setShowFunctionCode] = useState(false);
 
   const [tableScroll, setTableScroll] = useState({ left: false, right: false });
-  const originalTitleRef = useRef<string | null>(null);
   const participantTableRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (originalTitleRef.current === null) {
-      originalTitleRef.current = document.title;
-    }
-  }, []);
 
   useEffect(() => {
     if (campaignName) {
@@ -408,14 +401,6 @@ const CampaignEdit: React.FC = () => {
       document.title = "インスタントウィン管理画面｜プロジェクト";
     }
   }, [campaignName]);
-
-  useEffect(() => {
-    return () => {
-      if (originalTitleRef.current !== null) {
-        document.title = originalTitleRef.current;
-      }
-    };
-  }, []);
   const [hoveredDate, setHoveredDate] = useState<string | null>(null);
 
   const handleParticipantTableScroll = useCallback(() => {

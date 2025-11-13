@@ -30,15 +30,17 @@ const CampaignPublicPage: React.FC = () => {
     presentationTexts,
   } = hookProps;
 
-  // Update document title to campaign name
+  // Update document title: set an empty title immediately to avoid any text/URL,
+  // then switch to the campaign name when loaded. Do not restore previous title on unmount.
   useEffect(() => {
-    const previousTitle = document.title;
+    // Set an empty title immediately on mount so nothing is displayed
+    if (!campaign?.name) document.title = "";
+  }, []); // run once on mount
+
+  useEffect(() => {
     if (campaign?.name) {
       document.title = campaign.name;
     }
-    return () => {
-      document.title = previousTitle;
-    };
   }, [campaign?.name]);
 
   // Create a "stable" version of the records to prevent the background from updating while the modal is open.

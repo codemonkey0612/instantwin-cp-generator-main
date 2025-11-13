@@ -14,12 +14,7 @@ const RegisterPage: React.FC = () => {
   const { user } = useAuth();
 
   useEffect(() => {
-    const previousTitle = document.title;
     document.title = 'インスタントウィン管理画面｜管理者登録';
-
-    return () => {
-      document.title = previousTitle;
-    };
   }, []);
 
   const handleRegister = async (e: React.FormEvent) => {

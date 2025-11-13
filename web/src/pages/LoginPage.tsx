@@ -13,12 +13,7 @@ const LoginPage: React.FC = () => {
   const { user } = useAuth();
 
   useEffect(() => {
-    const previousTitle = document.title;
     document.title = "インスタントウィン管理画面｜ログイン";
-
-    return () => {
-      document.title = previousTitle;
-    };
   }, []);
 
   const handleLogin = async (e: React.FormEvent) => {

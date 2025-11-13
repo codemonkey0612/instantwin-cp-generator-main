@@ -55,7 +55,6 @@ const ClientDetails: React.FC = () => {
   const [confirmDeleteName, setConfirmDeleteName] = useState("");
   const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const originalTitleRef = useRef<string | null>(null);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -73,24 +72,12 @@ const ClientDetails: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (originalTitleRef.current === null) {
-      originalTitleRef.current = document.title;
-    }
-
     if (client?.name) {
       document.title = `インスタントウィン管理画面｜${client.name}`;
     } else {
       document.title = "インスタントウィン管理画面｜クライアント";
     }
   }, [client?.name]);
-
-  useEffect(() => {
-    return () => {
-      if (originalTitleRef.current !== null) {
-        document.title = originalTitleRef.current;
-      }
-    };
-  }, []);
 
   useEffect(() => {
     const fetchClientAndCampaigns = async () => {

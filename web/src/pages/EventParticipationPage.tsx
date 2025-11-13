@@ -63,6 +63,18 @@ const EventParticipationPage: React.FC = () => {
     }
   }, [campaign]);
 
+  // Prevent title from showing the URL: set an empty title immediately,
+  // then set the campaign name once loaded
+  useEffect(() => {
+    if (!campaign?.name) document.title = "";
+  }, []);
+
+  useEffect(() => {
+    if (campaign?.name) {
+      document.title = campaign.name;
+    }
+  }, [campaign?.name]);
+
   const getContrastingTextColor = (hex: string): string => {
     if (!hex || !hex.startsWith("#")) return "#FFFFFF";
     const hexValue = hex.substring(1);

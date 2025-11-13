@@ -26,12 +26,7 @@ const Dashboard: React.FC = () => {
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const previousTitle = document.title;
     document.title = "インスタントウィン管理画面｜クライアント一覧";
-
-    return () => {
-      document.title = previousTitle;
-    };
   }, []);
 
   useEffect(() => {
