@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { auth } from '../firebase';
 import Spinner from '../components/Spinner';
@@ -12,6 +12,15 @@ const RegisterPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { user } = useAuth();
+
+  useEffect(() => {
+    const previousTitle = document.title;
+    document.title = 'インスタントウィン管理画面｜管理者登録';
+
+    return () => {
+      document.title = previousTitle;
+    };
+  }, []);
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();

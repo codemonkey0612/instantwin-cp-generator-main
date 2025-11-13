@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { auth } from "../firebase";
 import Spinner from "../components/Spinner";
@@ -11,6 +11,15 @@ const LoginPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { user } = useAuth();
+
+  useEffect(() => {
+    const previousTitle = document.title;
+    document.title = "インスタントウィン管理画面｜ログイン";
+
+    return () => {
+      document.title = previousTitle;
+    };
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();

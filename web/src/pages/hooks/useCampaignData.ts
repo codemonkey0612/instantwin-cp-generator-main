@@ -49,7 +49,7 @@ export const useCampaignData = (campaignId: string | undefined) => {
     if (!campaignId || !currentUser || !currentCampaign) {
       setAllParticipantRecords([]);
       if (!preserveCurrentRecord) {
-        setParticipantRecord(null);
+      setParticipantRecord(null);
       }
       setParticipationCount(0);
       setExtraChances(0);
@@ -271,13 +271,13 @@ export const useCampaignData = (campaignId: string | undefined) => {
         .finally(() => {
           // Only clean up URL if we're not redirecting
           if (!window.localStorage.getItem("lineReturnUrl")) {
-            setLoading(false);
-            const url = new URL(window.location.href);
-            url.searchParams.delete("code");
-            url.searchParams.delete("state");
-            url.searchParams.delete("error");
-            url.searchParams.delete("error_description");
-            window.history.replaceState({}, document.title, url.toString());
+          setLoading(false);
+          const url = new URL(window.location.href);
+          url.searchParams.delete("code");
+          url.searchParams.delete("state");
+          url.searchParams.delete("error");
+          url.searchParams.delete("error_description");
+          window.history.replaceState({}, document.title, url.toString());
           }
         });
     }

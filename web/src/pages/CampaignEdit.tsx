@@ -392,7 +392,30 @@ const CampaignEdit: React.FC = () => {
   const [showFunctionCode, setShowFunctionCode] = useState(false);
 
   const [tableScroll, setTableScroll] = useState({ left: false, right: false });
+  const originalTitleRef = useRef<string | null>(null);
   const participantTableRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (originalTitleRef.current === null) {
+      originalTitleRef.current = document.title;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (campaignName) {
+      document.title = `インスタントウィン管理画面｜${campaignName}`;
+    } else {
+      document.title = "インスタントウィン管理画面｜プロジェクト";
+    }
+  }, [campaignName]);
+
+  useEffect(() => {
+    return () => {
+      if (originalTitleRef.current !== null) {
+        document.title = originalTitleRef.current;
+      }
+    };
+  }, []);
   const [hoveredDate, setHoveredDate] = useState<string | null>(null);
 
   const handleParticipantTableScroll = useCallback(() => {
@@ -819,12 +842,52 @@ const CampaignEdit: React.FC = () => {
           store: h.store,
           usedAt: h.usedAt?.toDate ? h.usedAt.toDate() : h.usedAt,
         }));
+        
+        // Convert wonAt to Date object, handling all possible formats
+        const rawWonAt = data.wonAt;
+        let wonAtDate: Date;
+        if (!rawWonAt) {
+          wonAtDate = new Date();
+        } else if (rawWonAt instanceof Date) {
+          wonAtDate = rawWonAt;
+        } else if (rawWonAt instanceof Timestamp) {
+          wonAtDate = rawWonAt.toDate();
+        } else if (rawWonAt.toDate && typeof rawWonAt.toDate === 'function') {
+          wonAtDate = rawWonAt.toDate();
+        } else if (rawWonAt.seconds !== undefined && rawWonAt.nanoseconds !== undefined) {
+          const timestamp = new Timestamp(rawWonAt.seconds, rawWonAt.nanoseconds);
+          wonAtDate = timestamp.toDate();
+        } else if (rawWonAt.seconds !== undefined) {
+          wonAtDate = new Date(rawWonAt.seconds * 1000);
+        } else if (typeof rawWonAt === 'string' || typeof rawWonAt === 'number') {
+          wonAtDate = new Date(rawWonAt);
+        } else {
+          wonAtDate = new Date();
+        }
+        
+        // Validate the converted date
+        if (!(wonAtDate instanceof Date) || isNaN(wonAtDate.getTime())) {
+          console.warn("Invalid wonAt date for participant:", doc.id, rawWonAt, wonAtDate);
+          wonAtDate = new Date();
+        }
+        
+        // Build participant object
         return {
           id: doc.id,
-          ...data,
-          wonAt: (data.wonAt as InstanceType<typeof Timestamp>)?.toDate(),
+          campaignId: data.campaignId,
+          userId: data.userId,
+          authInfo: data.authInfo,
+          wonAt: wonAtDate,
+          prizeId: data.prizeId,
+          prizeDetails: data.prizeDetails,
+          assignedUrl: data.assignedUrl,
+          couponUsed: data.couponUsed,
+          couponUsedCount: data.couponUsedCount,
           couponUsageHistory: history,
-        };
+          shippingAddress: data.shippingAddress,
+          isConsolationPrize: data.isConsolationPrize,
+          questionnaireAnswers: data.questionnaireAnswers,
+        } as Participant;
       }) as Participant[];
 
       participantsData.sort(
@@ -914,9 +977,10 @@ const CampaignEdit: React.FC = () => {
     const dailyData = allParticipants.reduce(
       (acc, p) => {
         if (p.wonAt) {
-          const date = new Date(p.wonAt.setHours(0, 0, 0, 0))
-            .toISOString()
-            .split("T")[0];
+          // Create a copy of the date before modifying it to avoid mutating the original
+          const dateCopy = new Date(p.wonAt.getTime());
+          dateCopy.setHours(0, 0, 0, 0);
+          const date = dateCopy.toISOString().split("T")[0];
           if (!acc[date]) {
             acc[date] = { participantCount: 0, winCount: 0 };
           }
@@ -2608,18 +2672,54 @@ const CampaignEdit: React.FC = () => {
 
     allParticipants.forEach((p) => {
       let user = allUsers.get(p.userId);
+      
+      // Convert p.wonAt to Date object (should already be Date from fetchDashboardData)
+      // Create a new Date object to avoid any reference issues
+      let pWonAtDate: Date | null = null;
+      if (p.wonAt) {
+        if (p.wonAt instanceof Date) {
+          // Create a new Date object from the existing one to preserve time
+          pWonAtDate = new Date(p.wonAt.getTime());
+        } else if (p.wonAt && typeof (p.wonAt as any).toDate === 'function') {
+          pWonAtDate = (p.wonAt as any).toDate();
+        } else if ((p.wonAt as any).seconds !== undefined) {
+          // Firestore Timestamp object with seconds property
+          if ((p.wonAt as any).nanoseconds !== undefined) {
+            const timestamp = new Timestamp((p.wonAt as any).seconds, (p.wonAt as any).nanoseconds);
+            pWonAtDate = timestamp.toDate();
+          } else {
+            pWonAtDate = new Date((p.wonAt as any).seconds * 1000);
+          }
+        } else if (typeof p.wonAt === 'string' || typeof p.wonAt === 'number') {
+          pWonAtDate = new Date(p.wonAt);
+        }
+      }
+      
+      // Validate the converted date
+      if (pWonAtDate && (!(pWonAtDate instanceof Date) || isNaN(pWonAtDate.getTime()))) {
+        pWonAtDate = null;
+      }
+      
       if (!user) {
+        // Use pWonAtDate if available, otherwise fallback to current date
+        const initialDate = pWonAtDate ? new Date(pWonAtDate.getTime()) : new Date();
         user = {
           userId: p.userId,
           authInfo: p.authInfo,
           participations: [],
-          userCreationDate: p.wonAt || new Date(),
+          userCreationDate: initialDate,
         };
         allUsers.set(p.userId, user);
       }
       user.participations.push(p);
-      if (p.wonAt && p.wonAt < user.userCreationDate) {
-        user.userCreationDate = p.wonAt;
+      
+      // Update userCreationDate if this participation is earlier
+      if (pWonAtDate) {
+        // Create a new Date object to avoid reference issues
+        const pWonAtDateCopy = new Date(pWonAtDate.getTime());
+        if (pWonAtDateCopy < user.userCreationDate) {
+          user.userCreationDate = pWonAtDateCopy;
+        }
       }
     });
 
@@ -2762,16 +2862,35 @@ const CampaignEdit: React.FC = () => {
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-700">
-                      {userCreationDate
-                        ? userCreationDate.toLocaleString("ja-JP", {
-                            year: "numeric",
-                            month: "2-digit",
-                            day: "2-digit",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                            second: "2-digit",
-                          })
-                        : "-"}
+                      {(() => {
+                        // Ensure userCreationDate is a valid Date object
+                        let dateToDisplay: Date | null = null;
+                        if (userCreationDate instanceof Date && !isNaN(userCreationDate.getTime())) {
+                          dateToDisplay = userCreationDate;
+                        } else if (userCreationDate) {
+                          // Try to convert if it's not a Date
+                          if (typeof (userCreationDate as any).toDate === 'function') {
+                            dateToDisplay = (userCreationDate as any).toDate();
+                          } else {
+                            const converted = new Date(userCreationDate as any);
+                            if (!isNaN(converted.getTime())) {
+                              dateToDisplay = converted;
+                            }
+                          }
+                        }
+                        
+                        return dateToDisplay && !isNaN(dateToDisplay.getTime())
+                          ? dateToDisplay.toLocaleString("ja-JP", {
+                              year: "numeric",
+                              month: "2-digit",
+                              day: "2-digit",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                              second: "2-digit",
+                              hour12: false,
+                            })
+                          : "-";
+                      })()}
                     </td>
                     <td
                       className="px-6 py-4 whitespace-nowrap text-sm text-slate-700 truncate max-w-xs"

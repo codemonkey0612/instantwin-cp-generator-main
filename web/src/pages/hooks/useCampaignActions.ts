@@ -110,12 +110,12 @@ export const useCampaignActions = ({
             lastParticipationTime = sortedRecords[0].wonAt;
           }
           
-          if (campaign.preventDuplicatePrizes) {
-            currentAlreadyWonPrizeIds = new Set(
+        if (campaign.preventDuplicatePrizes) {
+          currentAlreadyWonPrizeIds = new Set(
               records
-                .filter((p) => !p.isConsolationPrize)
-                .map((p) => p.prizeId),
-            );
+              .filter((p) => !p.isConsolationPrize)
+              .map((p) => p.prizeId),
+          );
           }
         }
 

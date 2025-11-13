@@ -35,7 +35,7 @@ const PROVIDER_ORDER: Array<keyof typeof providerDetails> = [
 
 const enabledProviders = (authProviders: AuthProviders | undefined) => {
   const enabledSet = new Set(
-    Object.entries(authProviders || {})
+  Object.entries(authProviders || {})
       .filter(([_, v]) => Boolean(v))
       .map(([k]) => k as keyof AuthProviders),
   );
@@ -109,14 +109,14 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
       console.log("Using popup sign-in with provider:", provider.providerId);
       const result = await auth.signInWithPopup(provider);
       console.log("Popup sign-in successful:", result.user?.uid, result.user?.email);
-      
+
       // Mark campaign as authenticated after successful popup sign-in
       if (campaign.id && result.user && !result.user.isAnonymous) {
         setCampaignAuth(campaign.id);
         console.log("Campaign auth set for:", campaign.id);
         window.localStorage.removeItem("pendingCampaignAuth");
         setModalStep?.("confirm");
-        closeModal?.();
+      closeModal?.();
       }
       setIsAuthLoading(false);
     } catch (error: any) {
@@ -167,7 +167,7 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
       const redirectUri = `${window.location.origin}/auth/line/callback`;
       
       // LINE Channel ID - must match the channel ID in LINE Developers Console
-      const clientId = "2008069638";
+    const clientId = "2008069638";
       
       console.log("LINE Login Configuration:", {
         clientId,
@@ -196,10 +196,10 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
       console.log("Redirecting to LINE authorization:", lineAuthorizeUrl);
 
       // Store state for verification
-      window.localStorage.setItem("lineOAuthState", state);
+    window.localStorage.setItem("lineOAuthState", state);
       
       // Redirect to LINE authorization
-      window.location.href = lineAuthorizeUrl;
+    window.location.href = lineAuthorizeUrl;
     } catch (error: any) {
       console.error("LINE login error:", error);
       setAuthError("LINEログインの開始に失敗しました。");
@@ -421,11 +421,11 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
             <h3 className="font-semibold text-slate-800 mb-2">
               📧 メールを確認してください
-            </h3>
+          </h3>
             <p className="text-sm text-slate-600 mb-2">
               <strong>{emailForLink}</strong>{" "}
-              に送信されたメールを開き、中のリンクをクリックして認証を完了してください。
-            </p>
+            に送信されたメールを開き、中のリンクをクリックして認証を完了してください。
+          </p>
             <div className="bg-yellow-50 border border-yellow-200 rounded p-3 mt-3">
               <p className="text-xs text-yellow-800 font-semibold mb-1">
                 ⚠️ メールが届かない場合:
