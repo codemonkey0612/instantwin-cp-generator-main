@@ -3692,9 +3692,11 @@ const CampaignEdit: React.FC = () => {
                       </div>
                       <button
                         type="button"
-                        onClick={() =>
-                          window.open(`#/monitor/${campaignId}`, "_blank")
-                        }
+                        onClick={() => {
+                          if (!campaignId) return;
+                          const monitorUrl = `${window.location.origin}/monitor/${campaignId}`;
+                          window.open(monitorUrl, "_blank");
+                        }}
                         className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-md hover:bg-slate-900 transition-colors"
                       >
                         モニターを起動
