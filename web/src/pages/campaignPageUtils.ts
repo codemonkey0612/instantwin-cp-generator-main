@@ -99,6 +99,7 @@ interface LotteryParams {
   user: any; // firebase user
   alreadyWonPrizeIds: Set<string>;
   pendingAnswers: Record<string, string | string[]>;
+  lastParticipationTime?: Date | null; // Last participation time for interval check
 }
 
 // The core lottery logic as a standalone function
@@ -107,8 +108,42 @@ export const runLotteryTransaction = async ({
   user,
   alreadyWonPrizeIds,
   pendingAnswers,
+  lastParticipationTime,
 }: LotteryParams): Promise<Participant> => {
   const campaignDocRef = db.collection("campaigns").doc(campaignId);
+
+  // Check participation interval restriction BEFORE transaction
+  // (Firestore transactions don't support queries, only document references)
+  let intervalCheckPassed = true;
+  let intervalError: string | null = null;
+  
+  if (lastParticipationTime) {
+    // Get campaign data to check interval settings
+    const campaignDoc = await campaignDocRef.get();
+    if (campaignDoc.exists) {
+      const campaignData = campaignDoc.data() as Campaign;
+      const intervalHours = campaignData.participationIntervalHours || 0;
+      const intervalMinutes = campaignData.participationIntervalMinutes || 0;
+      
+      if (intervalHours > 0 || intervalMinutes > 0) {
+        const intervalMs = (intervalHours * 60 + intervalMinutes) * 60 * 1000;
+        const nextAvailableTime = lastParticipationTime.getTime() + intervalMs;
+        const now = Date.now();
+        
+        if (now < nextAvailableTime) {
+          intervalCheckPassed = false;
+          const remainingMs = nextAvailableTime - now;
+          const remainingHours = Math.floor(remainingMs / (60 * 60 * 1000));
+          const remainingMinutes = Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000));
+          intervalError = `PARTICIPATION_INTERVAL_NOT_PASSED:${remainingHours}:${remainingMinutes}`;
+        }
+      }
+    }
+  }
+  
+  if (!intervalCheckPassed && intervalError) {
+    throw new Error(intervalError);
+  }
 
   return db.runTransaction(async (transaction) => {
     const campaignDoc = await transaction.get(campaignDocRef);

@@ -105,36 +105,20 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
         await auth.signOut();
       }
 
-      // Use popup for localhost (more reliable) or redirect for production
-      const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      // Use popup for both localhost and production - more reliable and better UX
+      console.log("Using popup sign-in with provider:", provider.providerId);
+      const result = await auth.signInWithPopup(provider);
+      console.log("Popup sign-in successful:", result.user?.uid, result.user?.email);
       
-      if (isLocalhost) {
-        // Use popup for local development - more reliable than redirect
-        console.log("Using popup sign-in (localhost detected) with provider:", provider.providerId);
-        const result = await auth.signInWithPopup(provider);
-        console.log("Popup sign-in successful:", result.user?.uid, result.user?.email);
-        
-        // Mark campaign as authenticated after successful popup sign-in
-        if (campaign.id && result.user && !result.user.isAnonymous) {
-          setCampaignAuth(campaign.id);
-          console.log("Campaign auth set for:", campaign.id);
-          setModalStep?.("confirm");
-          closeModal?.();
-        }
-        setIsAuthLoading(false);
-      } else {
-        // Use redirect for production
-        console.log("Initiating redirect sign-in with provider:", provider.providerId);
-        console.log("Current URL before redirect:", window.location.href);
-        
-        await auth.signInWithRedirect(provider);
-        
-        // The redirect will happen, so we don't need to do anything else here
-        // The authentication will be handled in the redirect callback (getRedirectResult)
-        console.log("Redirect initiated - page should redirect now");
-        // Note: Don't close modal or set loading to false here because we're redirecting
-        // The page will reload after redirect
+      // Mark campaign as authenticated after successful popup sign-in
+      if (campaign.id && result.user && !result.user.isAnonymous) {
+        setCampaignAuth(campaign.id);
+        console.log("Campaign auth set for:", campaign.id);
+        window.localStorage.removeItem("pendingCampaignAuth");
+        setModalStep?.("confirm");
+        closeModal?.();
       }
+      setIsAuthLoading(false);
     } catch (error: any) {
       console.error("Sign-in error:", error);
       console.error("Error code:", error.code, "Error message:", error.message);
@@ -165,6 +149,9 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
 
   const handleLineSignIn = async () => {
     try {
+      setAuthError(null);
+      setIsAuthLoading(true);
+      
       // Store the current URL to redirect back after authentication
       const currentUrl = window.location.href;
       window.localStorage.setItem("lineReturnUrl", currentUrl);
@@ -172,14 +159,22 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
       // Store campaign ID for authentication association
       if (campaign.id) {
         storeCampaignIdForAuth(campaign.id);
+        console.log("Stored campaign ID for LINE auth:", campaign.id);
       }
 
       // Use a fixed callback URL (must be registered in LINE Developers console)
-      // This should be: https://yourdomain.com/auth/line/callback
+      // This must match EXACTLY what's registered in LINE Developers Console
       const redirectUri = `${window.location.origin}/auth/line/callback`;
       
-      // LINE Channel ID - should be moved to environment variable
-      const clientId = "2008453262";
+      // LINE Channel ID - must match the channel ID in LINE Developers Console
+      const clientId = "2008069638";
+      
+      console.log("LINE Login Configuration:", {
+        clientId,
+        redirectUri,
+        origin: window.location.origin,
+        currentUrl: window.location.href,
+      });
       
       // Generate state for CSRF protection
       const state = Math.random().toString(36).substring(2, 15) + 
@@ -197,6 +192,8 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
       });
       
       const lineAuthorizeUrl = `https://access.line.me/oauth2/v2.1/authorize?${params.toString()}`;
+      
+      console.log("Redirecting to LINE authorization:", lineAuthorizeUrl);
 
       // Store state for verification
       window.localStorage.setItem("lineOAuthState", state);
@@ -204,7 +201,9 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
       // Redirect to LINE authorization
       window.location.href = lineAuthorizeUrl;
     } catch (error: any) {
+      console.error("LINE login error:", error);
       setAuthError("LINEログインの開始に失敗しました。");
+      setIsAuthLoading(false);
       captureException(error, { level: "error" });
     }
   };

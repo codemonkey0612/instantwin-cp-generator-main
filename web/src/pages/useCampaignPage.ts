@@ -15,7 +15,9 @@ import { captureException } from "@sentry/react";
 import { 
   isAuthenticatedForCampaign, 
   setCampaignAuth, 
-  getAndClearStoredCampaignId
+  getAndClearStoredCampaignId,
+  storePendingParticipationCampaign,
+  getAndClearPendingParticipationCampaign
 } from "../utils/campaignAuth";
 
 export type PresentationTexts = {
@@ -41,12 +43,18 @@ export const useCampaignPage = () => {
   const { campaignId } = useParams<{ campaignId: string }>();
   const navigate = useNavigate();
   
-  // Clear campaign auth when switching to a different campaign
+  // Clear pending participation when switching to a different campaign
+  // This ensures participation from one campaign doesn't trigger in another
   useEffect(() => {
     if (campaignId) {
-      // When user navigates to a campaign, check if they were authenticated for a different campaign
-      // and clear any previous campaign auth if needed (this ensures fresh auth per campaign)
-      // Note: We don't clear here automatically - we let the auth check handle requiring re-auth
+      // Check if there's a pending participation for a different campaign
+      const pendingCampaignId = window.localStorage.getItem("pendingParticipationCampaign");
+      if (pendingCampaignId && pendingCampaignId !== campaignId) {
+        // Clear the pending participation if it's for a different campaign
+        window.localStorage.removeItem("pendingParticipationCampaign");
+        // Also reset isParticipating to prevent cross-campaign participation
+        isParticipating.current = false;
+      }
     }
   }, [campaignId]);
 
@@ -73,6 +81,10 @@ export const useCampaignPage = () => {
     timeLeftMessage,
     loadParticipantData,
   } = useCampaignData(campaignId);
+
+  const isAuthenticatedForThisCampaign = campaignId
+    ? isAuthenticatedForCampaign(campaignId)
+    : false;
 
   // --- STATE HOOKS ---
   const { modalState, formState, interactionState } = useCampaignState();
@@ -208,7 +220,7 @@ export const useCampaignPage = () => {
 
   // Ref to track if redirect result has been processed (only process once)
   const redirectProcessedRef = useRef(false);
-  
+
   const continueParticipationFlow = useCallback(() => {
     if (!user) {
       return;
@@ -232,11 +244,15 @@ export const useCampaignPage = () => {
       return;
     }
 
+    // Check participation interval restriction
+    if (nextAvailableTime && nextAvailableTime.getTime() > Date.now()) {
+      // Interval has not passed yet - the button should already be disabled
+      // but we check here as well for safety
+      return;
+    }
+
     // Check if campaign requires authentication and if user is authenticated for this campaign
     const requiresAuth = campaign?.participantAuthMethod === "required";
-    const isAuthenticatedForThisCampaign = campaignId 
-      ? isAuthenticatedForCampaign(campaignId)
-      : false;
 
     if (requiresAuth && (!isLoggedIn || !isAuthenticatedForThisCampaign)) {
       setModalStep("auth");
@@ -264,6 +280,7 @@ export const useCampaignPage = () => {
     formState,
     interactionState,
     performLottery,
+    nextAvailableTime,
   ]);
 
   useEffect(() => {
@@ -276,7 +293,7 @@ export const useCampaignPage = () => {
           );
         if (email) {
           try {
-            isParticipating.current = true;
+            // DO NOT set isParticipating here - participation should only happen when user clicks the button
             await auth.signInWithEmailLink(email, window.location.href);
             window.localStorage.removeItem("emailForSignIn");
             
@@ -304,9 +321,6 @@ export const useCampaignPage = () => {
     completeSignInWithEmailLink();
 
     // Check if user is authenticated for this campaign (check this first, before isParticipating check)
-    const isAuthenticatedForThisCampaign = campaignId 
-      ? isAuthenticatedForCampaign(campaignId)
-      : false;
     const isLoggedIn = user && !user.isAnonymous;
     const requiresAuth = campaign?.participantAuthMethod === "required";
 
@@ -333,7 +347,31 @@ export const useCampaignPage = () => {
       setModalStep("confirm");
     }
 
+    // Only process participation if it's for THIS campaign
+    // This prevents Campaign A's authentication from triggering participation in Campaign B
     if (isParticipating.current && user) {
+      // Check if the pending participation is for the current campaign (check before clearing)
+      const pendingCampaignId = window.localStorage.getItem("pendingParticipationCampaign");
+      
+      // Only proceed if the pending participation matches the current campaign
+      // If there's no pending campaign ID, we can't verify it's for this campaign, so we ignore it
+      if (pendingCampaignId !== campaignId) {
+        console.log("Ignoring participation from different campaign:", {
+          pendingCampaignId,
+          currentCampaignId: campaignId
+        });
+        isParticipating.current = false;
+        // Clear the pending participation for the other campaign
+        if (pendingCampaignId) {
+          window.localStorage.removeItem("pendingParticipationCampaign");
+        }
+        return;
+      }
+      
+      // Clear the pending participation now that we've verified it's for this campaign
+      if (pendingCampaignId) {
+        window.localStorage.removeItem("pendingParticipationCampaign");
+      }
       isParticipating.current = false;
 
       if (
@@ -342,8 +380,8 @@ export const useCampaignPage = () => {
       ) {
         // If user just authenticated and is now authenticated for this campaign, proceed
         if (isLoggedIn && isAuthenticatedForThisCampaign) {
-          modalState.setIsAuthLoading(false);
-          setModalStep("confirm");
+        modalState.setIsAuthLoading(false);
+        setModalStep("confirm");
         } else {
           // Still not authenticated, keep showing auth modal
           modalState.setIsAuthLoading(false);
@@ -354,7 +392,12 @@ export const useCampaignPage = () => {
       } else {
         continueParticipationFlow();
       }
-    } else if (promptToSaveResult && user && !user.isAnonymous) {
+    } else if (
+      promptToSaveResult &&
+      user &&
+      !user.isAnonymous &&
+      isAuthenticatedForThisCampaign
+    ) {
       modalState.setPromptToSaveResult(false);
     }
   }, [
@@ -375,6 +418,7 @@ export const useCampaignPage = () => {
     hasTicket,
     userParticipationRequest,
     continueParticipationFlow,
+    isAuthenticatedForThisCampaign,
     isAuthenticatedForCampaign,
     setCampaignAuth,
     getAndClearStoredCampaignId,
@@ -398,9 +442,20 @@ export const useCampaignPage = () => {
         
         // Check if there are any URL parameters that indicate we're coming from a redirect
         const urlParams = new URLSearchParams(window.location.search);
-        const hasRedirectParams = urlParams.has('apiKey') || urlParams.has('mode') || 
-                                  urlParams.has('oobCode') || urlParams.has('continueUrl') ||
-                                  urlParams.has('code') || urlParams.has('state');
+        const hasRedirectParams =
+          urlParams.has("apiKey") ||
+          urlParams.has("mode") ||
+          urlParams.has("oobCode") ||
+          urlParams.has("continueUrl") ||
+          urlParams.has("code") ||
+          urlParams.has("state");
+        
+        // If there's no pending campaign and no redirect parameters, skip processing
+        if (!storedCampaignId && !hasRedirectParams) {
+          console.log("No pending campaign auth or redirect params detected - skipping getRedirectResult");
+          redirectProcessedRef.current = true;
+          return;
+        }
         
         // If we have a stored campaign ID but no redirect params and no user,
         // this is likely a stale stored ID from a previous failed attempt
@@ -426,16 +481,14 @@ export const useCampaignPage = () => {
           console.log("Cleared stored campaign ID:", clearedCampaignId, "Current campaign ID:", campaignId);
           
           // Always set campaign auth for the current campaign if we're on a campaign page
+          // DO NOT set isParticipating here - participation should only happen when user clicks the button
           if (campaignId) {
             setCampaignAuth(campaignId);
             console.log("Campaign auth set for:", campaignId);
-            // Mark that we're participating after successful auth
-            isParticipating.current = true;
           } else if (clearedCampaignId) {
             // If we have a stored campaign ID but not on a campaign page, set it anyway
             setCampaignAuth(clearedCampaignId);
             console.log("Campaign auth set for stored ID:", clearedCampaignId);
-            isParticipating.current = true;
           }
           redirectProcessedRef.current = true;
         } else if (result.user && result.user.isAnonymous) {
@@ -495,15 +548,14 @@ export const useCampaignPage = () => {
             const currentUser = auth.currentUser;
             if (currentUser && !currentUser.isAnonymous) {
               console.log("User is already authenticated - setting campaign auth now");
-              if (campaignId && campaignId === storedCampaignId) {
-                setCampaignAuth(campaignId);
-                isParticipating.current = true;
-                window.localStorage.removeItem("pendingCampaignAuth");
-              } else if (campaignId) {
-                setCampaignAuth(campaignId);
-                isParticipating.current = true;
-                window.localStorage.removeItem("pendingCampaignAuth");
-              }
+          // DO NOT set isParticipating here - participation should only happen when user clicks the button
+          if (campaignId && campaignId === storedCampaignId) {
+            setCampaignAuth(campaignId);
+            window.localStorage.removeItem("pendingCampaignAuth");
+          } else if (!campaignId && storedCampaignId) {
+            setCampaignAuth(storedCampaignId);
+            window.localStorage.removeItem("pendingCampaignAuth");
+          }
             }
           }
           redirectProcessedRef.current = true;
@@ -557,48 +609,35 @@ export const useCampaignPage = () => {
         
         authStateChangeProcessedRef.current = true;
         
+        // DO NOT set isParticipating here - participation should only happen when user clicks the button
         if (campaignId && campaignId === storedCampaignId) {
           setCampaignAuth(campaignId);
           console.log("Campaign auth set via auth state change:", campaignId);
-          isParticipating.current = true;
           // Clear the stored campaign ID
           window.localStorage.removeItem("pendingCampaignAuth");
-        } else if (campaignId) {
-          // If we're on a campaign page but stored ID doesn't match, use current campaign
-          setCampaignAuth(campaignId);
-          console.log("Campaign auth set for current campaign:", campaignId);
-          isParticipating.current = true;
-          window.localStorage.removeItem("pendingCampaignAuth");
-        } else if (storedCampaignId) {
+        } else if (!campaignId && storedCampaignId) {
           // Use stored campaign ID if we're not on a campaign page
           setCampaignAuth(storedCampaignId);
           console.log("Campaign auth set for stored ID:", storedCampaignId);
-          isParticipating.current = true;
           window.localStorage.removeItem("pendingCampaignAuth");
         }
       } else if (!newUser) {
         // User signed out, reset flags
         authStateChangeProcessedRef.current = false;
-      } else if (newUser && !newUser.isAnonymous && storedCampaignId && !authStateChangeProcessedRef.current) {
+    } else if (newUser && !newUser.isAnonymous && storedCampaignId && !authStateChangeProcessedRef.current) {
         // User is already authenticated but we have a stored campaign ID
         // This might happen if the page reloaded after auth but before we processed it
         console.log("User already authenticated with stored campaign ID - processing now");
         authStateChangeProcessedRef.current = true;
         
+        // DO NOT set isParticipating here - participation should only happen when user clicks the button
         if (campaignId && campaignId === storedCampaignId) {
           setCampaignAuth(campaignId);
           console.log("Campaign auth set for already-authenticated user:", campaignId);
-          isParticipating.current = true;
           window.localStorage.removeItem("pendingCampaignAuth");
-        } else if (campaignId) {
-          setCampaignAuth(campaignId);
-          console.log("Campaign auth set for current campaign (already-authenticated):", campaignId);
-          isParticipating.current = true;
-          window.localStorage.removeItem("pendingCampaignAuth");
-        } else if (storedCampaignId) {
+        } else if (!campaignId && storedCampaignId) {
           setCampaignAuth(storedCampaignId);
           console.log("Campaign auth set for stored ID (already-authenticated):", storedCampaignId);
-          isParticipating.current = true;
           window.localStorage.removeItem("pendingCampaignAuth");
         }
       }
@@ -629,6 +668,13 @@ export const useCampaignPage = () => {
   const handleAuthInitiation = async () => {
     modalState.setAuthError(null);
 
+    // Mark that user wants to participate - this ensures participation continues after authentication
+    // This is set when user clicks the button, not when authentication happens
+    isParticipating.current = true;
+    if (campaignId) {
+      storePendingParticipationCampaign(campaignId);
+    }
+
     // Check if campaign requires authentication and if user is authenticated for this campaign
     const requiresAuth = campaign?.participantAuthMethod === "required";
     const isAuthenticatedForThisCampaign = campaignId 
@@ -651,10 +697,12 @@ export const useCampaignPage = () => {
     }
 
     try {
-      isParticipating.current = true;
       await auth.signInAnonymously();
     } catch (error) {
       isParticipating.current = false;
+      if (campaignId) {
+        getAndClearPendingParticipationCampaign();
+      }
       modalState.setAuthError(
         "参加処理の準備に失敗しました。ページを再読み込みしてください。",
       );
@@ -824,7 +872,7 @@ export const useCampaignPage = () => {
     shouldShowLoginPromptBanner:
       campaign?.authProviders &&
       Object.values(campaign.authProviders).some((v) => v) &&
-      (user === null || user.isAnonymous),
+      !isAuthenticatedForThisCampaign,
     participationButtonDisabled:
       !!nextAvailableTime ||
       interactionState.isEventParticipationDone ||

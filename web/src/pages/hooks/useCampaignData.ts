@@ -42,13 +42,15 @@ export const useCampaignData = (campaignId: string | undefined) => {
     campaignRef.current = campaign;
   }, [campaign]);
 
-  const loadParticipantData = useCallback(async () => {
+  const loadParticipantData = useCallback(async (preserveCurrentRecord: boolean = false) => {
     const currentUser = user;
     const currentCampaign = campaign;
 
     if (!campaignId || !currentUser || !currentCampaign) {
       setAllParticipantRecords([]);
-      setParticipantRecord(null);
+      if (!preserveCurrentRecord) {
+        setParticipantRecord(null);
+      }
       setParticipationCount(0);
       setExtraChances(0);
       setUserParticipationRequest(null);
@@ -104,10 +106,37 @@ export const useCampaignData = (campaignId: string | undefined) => {
             (a, b) => (b.wonAt?.getTime() || 0) - (a.wonAt?.getTime() || 0),
           );
         setAllParticipantRecords(records);
-        setParticipantRecord(records.find((r) => r.prizeId !== "loss") || null);
+        // Set participantRecord to the most recent record (including losses)
+        // This ensures the modal can transition to result step even for losses
+        setParticipantRecord(records[0] || null);
+        
+        // Calculate next available participation time based on interval restriction
+        const lastParticipation = records[0]; // Most recent participation (sorted by wonAt desc)
+        if (lastParticipation?.wonAt && currentCampaign) {
+          const intervalHours = currentCampaign.participationIntervalHours || 0;
+          const intervalMinutes = currentCampaign.participationIntervalMinutes || 0;
+          
+          if (intervalHours > 0 || intervalMinutes > 0) {
+            const intervalMs = (intervalHours * 60 + intervalMinutes) * 60 * 1000;
+            const lastWonAt = lastParticipation.wonAt.getTime();
+            const nextAvailable = new Date(lastWonAt + intervalMs);
+            const now = Date.now();
+            
+            if (nextAvailable.getTime() > now) {
+              setNextAvailableTime(nextAvailable);
+            } else {
+              setNextAvailableTime(null);
+            }
+          } else {
+            setNextAvailableTime(null);
+          }
+        } else {
+          setNextAvailableTime(null);
+        }
       } else {
         setAllParticipantRecords([]);
         setParticipantRecord(null);
+        setNextAvailableTime(null);
       }
     } catch (e) {
       console.warn("Could not read participation history.", e);
@@ -368,13 +397,33 @@ export const useCampaignData = (campaignId: string | undefined) => {
           setTimeLeftMessage("");
           if (intervalTimerRef.current) clearInterval(intervalTimerRef.current);
         } else {
-          setTimeLeftMessage(
-            `次回参加可能: ${nextAvailableTime.toLocaleTimeString("ja-JP")}`,
-          );
+          const remainingHours = Math.floor(remaining / (60 * 60 * 1000));
+          const remainingMinutes = Math.floor((remaining % (60 * 60 * 1000)) / (60 * 1000));
+          const remainingSeconds = Math.floor((remaining % (60 * 1000)) / 1000);
+          
+          let timeMessage = "次回参加可能まで: ";
+          if (remainingHours > 0) {
+            timeMessage += `${remainingHours}時間`;
+            if (remainingMinutes > 0) {
+              timeMessage += `${remainingMinutes}分`;
+            }
+          } else if (remainingMinutes > 0) {
+            timeMessage += `${remainingMinutes}分`;
+            if (remainingSeconds > 0) {
+              timeMessage += `${remainingSeconds}秒`;
+            }
+          } else {
+            timeMessage += `${remainingSeconds}秒`;
+          }
+          
+          setTimeLeftMessage(timeMessage);
         }
       };
       update();
-      intervalTimerRef.current = window.setInterval(update, 1000 * 30);
+      // Update every second for better UX when close to the time
+      intervalTimerRef.current = window.setInterval(update, 1000);
+    } else {
+      setTimeLeftMessage("");
     }
     return () => {
       if (intervalTimerRef.current) clearInterval(intervalTimerRef.current);

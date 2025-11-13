@@ -88,14 +88,35 @@ export const useCampaignActions = ({
           .where("campaignId", "==", campaignId)
           .where("userId", "==", currentUser.uid);
         let currentAlreadyWonPrizeIds = new Set<string>();
-        if (campaign.preventDuplicatePrizes) {
-          const freshParticipantsSnap = await participantsQuery.get();
-          currentAlreadyWonPrizeIds = new Set(
-            freshParticipantsSnap.docs
-              .map((doc) => doc.data() as Participant)
-              .filter((p) => !p.isConsolationPrize)
-              .map((p) => p.prizeId),
+        
+        // Get last participation time for interval check
+        const freshParticipantsSnap = await participantsQuery.get();
+        let lastParticipationTime: Date | null = null;
+        
+        if (!freshParticipantsSnap.empty) {
+          const records = freshParticipantsSnap.docs.map((doc) => {
+            const data = doc.data();
+            return {
+              ...data,
+              wonAt: data.wonAt?.toDate(),
+            } as Participant;
+          });
+          
+          // Find most recent participation
+          const sortedRecords = records.sort(
+            (a, b) => (b.wonAt?.getTime() || 0) - (a.wonAt?.getTime() || 0),
           );
+          if (sortedRecords.length > 0 && sortedRecords[0].wonAt) {
+            lastParticipationTime = sortedRecords[0].wonAt;
+          }
+          
+          if (campaign.preventDuplicatePrizes) {
+            currentAlreadyWonPrizeIds = new Set(
+              records
+                .filter((p) => !p.isConsolationPrize)
+                .map((p) => p.prizeId),
+            );
+          }
         }
 
         if (useMultiple && chancesToUse > 1) {
@@ -106,6 +127,7 @@ export const useCampaignActions = ({
               user: currentUser,
               alreadyWonPrizeIds: currentAlreadyWonPrizeIds,
               pendingAnswers: pendingAnswersRef.current || {},
+              lastParticipationTime: i === 0 ? lastParticipationTime : null, // Only check interval for first participation
             });
             results.push(result);
             if (
@@ -115,17 +137,27 @@ export const useCampaignActions = ({
             ) {
               currentAlreadyWonPrizeIds.add(result.prizeId);
             }
+            // Update last participation time for next iteration
+            if (result.wonAt) {
+              lastParticipationTime = result.wonAt;
+            }
           }
 
           setParticipationCount((prev) => prev + chancesToUse);
           setMultipleLotteryResults(results);
           pendingAnswersRef.current = null;
+          // Delay reload to allow modal to transition to result step first
+          // Pass true to preserveCurrentRecord to avoid clearing the result during transition
+          setTimeout(() => {
+            loadParticipantData(false);
+          }, 3000);
         } else {
           const resultParticipant = await runLotteryTransaction({
             campaignId,
             user: currentUser,
             alreadyWonPrizeIds: currentAlreadyWonPrizeIds,
             pendingAnswers: pendingAnswersRef.current || {},
+            lastParticipationTime,
           });
 
           setParticipationCount((prev) => prev + 1);
@@ -138,6 +170,11 @@ export const useCampaignActions = ({
           ) {
             setPromptToSaveResult(true);
           }
+          // Delay reload to allow modal to transition to result step first
+          // The participantRecord is already set above, so we delay reload
+          setTimeout(() => {
+            loadParticipantData(false);
+          }, 3000);
         }
       } catch (error: any) {
         let errorMessage = "抽選に失敗しました。もう一度お試しください。";
@@ -146,6 +183,24 @@ export const useCampaignActions = ({
           errorMessage = "参加回数の上限に達しました。";
         } else if (error.message === "OUT_OF_STOCK") {
           errorMessage = "申し訳ありません、全ての景品がなくなりました。";
+        } else if (error.message?.startsWith("PARTICIPATION_INTERVAL_NOT_PASSED")) {
+          // Parse the remaining time from the error message
+          const match = error.message.match(/PARTICIPATION_INTERVAL_NOT_PASSED:(\d+):(\d+)/);
+          if (match) {
+            const hours = parseInt(match[1], 10);
+            const minutes = parseInt(match[2], 10);
+            if (hours > 0 && minutes > 0) {
+              errorMessage = `参加間隔制限により、あと${hours}時間${minutes}分後に参加できます。`;
+            } else if (hours > 0) {
+              errorMessage = `参加間隔制限により、あと${hours}時間後に参加できます。`;
+            } else if (minutes > 0) {
+              errorMessage = `参加間隔制限により、あと${minutes}分後に参加できます。`;
+            } else {
+              errorMessage = "参加間隔制限により、しばらくしてから再度お試しください。";
+            }
+          } else {
+            errorMessage = "参加間隔制限により、しばらくしてから再度お試しください。";
+          }
         } else {
           errorMessage = `抽選中にエラーが発生しました: ${error.message}`;
           captureException(error, { level: "error" });
@@ -153,7 +208,7 @@ export const useCampaignActions = ({
 
         setAuthError(errorMessage);
         setModalStep("closed");
-        loadParticipantData();
+        loadParticipantData(); // Reload to update nextAvailableTime
       }
     },
     [

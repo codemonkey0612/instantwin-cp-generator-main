@@ -83,3 +83,36 @@ export const getAndClearStoredCampaignId = (): string | null => {
   return campaignId;
 };
 
+/**
+ * Store the campaign ID for a pending participation flow
+ * This ensures participation only happens for the campaign that initiated it
+ * @param campaignId - The campaign ID
+ */
+export const storePendingParticipationCampaign = (campaignId: string | undefined): void => {
+  if (!campaignId) return;
+  window.localStorage.setItem("pendingParticipationCampaign", campaignId);
+};
+
+/**
+ * Get and clear the stored campaign ID for pending participation
+ * @returns campaign ID or null
+ */
+export const getAndClearPendingParticipationCampaign = (): string | null => {
+  const campaignId = window.localStorage.getItem("pendingParticipationCampaign");
+  if (campaignId) {
+    window.localStorage.removeItem("pendingParticipationCampaign");
+  }
+  return campaignId;
+};
+
+/**
+ * Check if there's a pending participation for a specific campaign
+ * @param campaignId - The campaign ID to check
+ * @returns true if there's a pending participation for this campaign
+ */
+export const hasPendingParticipationForCampaign = (campaignId: string | undefined): boolean => {
+  if (!campaignId) return false;
+  const storedCampaignId = window.localStorage.getItem("pendingParticipationCampaign");
+  return storedCampaignId === campaignId;
+};
+

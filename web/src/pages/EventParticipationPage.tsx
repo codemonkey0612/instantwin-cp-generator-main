@@ -250,14 +250,44 @@ const EventParticipationPage: React.FC = () => {
           throw new Error("このQRコードは既に使用されています。");
       });
 
+      // Get last participation time for interval check
+      let lastParticipationTime: Date | null = null;
+      if (campaign?.participationIntervalHours || campaign?.participationIntervalMinutes) {
+        const participantsQuery = db
+          .collection("participants")
+          .where("campaignId", "==", campaignId)
+          .where("userId", "==", auth.currentUser.uid);
+        const participantsSnap = await participantsQuery.get();
+        if (!participantsSnap.empty) {
+          const records = participantsSnap.docs.map((doc) => {
+            const data = doc.data();
+            return {
+              ...data,
+              wonAt: data.wonAt?.toDate(),
+            };
+          });
+          const sortedRecords = records.sort(
+            (a: any, b: any) => (b.wonAt?.getTime() || 0) - (a.wonAt?.getTime() || 0),
+          );
+          if (sortedRecords.length > 0 && sortedRecords[0].wonAt) {
+            lastParticipationTime = sortedRecords[0].wonAt;
+          }
+        }
+      }
+
       for (let i = 0; i < chancesFromToken; i++) {
         const result = await runLotteryTransaction({
           campaignId,
           user: auth.currentUser,
           alreadyWonPrizeIds: new Set(),
           pendingAnswers: {},
+          lastParticipationTime: i === 0 ? lastParticipationTime : null, // Only check interval for first participation
         });
         results.push(result);
+        // Update last participation time for next iteration
+        if (result.wonAt) {
+          lastParticipationTime = result.wonAt;
+        }
       }
 
       const winningResults = results.filter((r) => r.prizeId !== "loss");
