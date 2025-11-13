@@ -6,7 +6,7 @@ import React, {
   useMemo,
 } from "react";
 import { useParams, useSearchParams, useNavigate } from "react-router-dom";
-import { db, auth } from "../firebase";
+import { db, auth, FieldValue } from "../firebase";
 import type { Campaign, Prize, Participant } from "../types";
 import Spinner from "../components/Spinner";
 import { runLotteryTransaction } from "./campaignPageUtils";
@@ -20,6 +20,8 @@ type EventState =
   | "fading"
   | "result"
   | "error";
+
+const EVENT_TOKEN_DISPLAY_LIMIT = 30;
 
 const EventParticipationPage: React.FC = () => {
   const { campaignId } = useParams<{ campaignId: string }>();
@@ -194,7 +196,13 @@ const EventParticipationPage: React.FC = () => {
           setError("このQRコードは無効か、期限切れです。");
           return;
         }
-        setTokenExpiresAt(tokenData.expires.toDate());
+        const expiresAt = tokenData.expires.toDate();
+        const initialRemaining = Math.max(
+          0,
+          Math.round((expiresAt.getTime() - Date.now()) / 1000),
+        );
+        setTokenExpiresAt(expiresAt);
+        setTimeLeft(Math.min(EVENT_TOKEN_DISPLAY_LIMIT, initialRemaining));
         setChancesFromToken(tokenData.chances || 1);
 
         setEventState("ready");
@@ -216,19 +224,25 @@ const EventParticipationPage: React.FC = () => {
   // Countdown timer effect
   useEffect(() => {
     if (!tokenExpiresAt) return;
-    const timer = setInterval(() => {
-      const remaining = Math.max(
+    const updateCountdown = () => {
+      const remainingActual = Math.max(
         0,
         Math.round((tokenExpiresAt.getTime() - Date.now()) / 1000),
       );
-      setTimeLeft(remaining);
-      if (remaining === 0 && eventState === "ready") {
+      const displayRemaining = Math.min(
+        EVENT_TOKEN_DISPLAY_LIMIT,
+        remainingActual,
+      );
+      setTimeLeft(displayRemaining);
+      if (remainingActual === 0 && eventState === "ready") {
         setError(
           "QRコードの有効期限が切れました。モニターで新しいQRコードをスキャンしてください。",
         );
-        clearInterval(timer);
       }
-    }, 1000);
+    };
+
+    updateCountdown();
+    const timer = setInterval(updateCountdown, 1000);
     return () => clearInterval(timer);
   }, [tokenExpiresAt, eventState]);
 
@@ -306,14 +320,17 @@ const EventParticipationPage: React.FC = () => {
       const resultsToSave =
         winningResults.length > 0 ? winningResults : [results[0]];
 
-      await resultRef.set({
-        results: resultsToSave.map((r) => ({
-          prize: r.prizeDetails,
-          isConsolation: !!r.isConsolationPrize,
-        })),
-        wonAt: new Date(),
-        userId: auth.currentUser.uid,
-      });
+      await resultRef.set(
+        {
+          results: resultsToSave.map((r) => ({
+            prize: r.prizeDetails,
+            isConsolation: !!r.isConsolationPrize,
+          })),
+          wonAt: FieldValue.serverTimestamp(),
+          userId: auth.currentUser.uid,
+        },
+        { merge: true },
+      );
       await tokenRef.delete();
 
       if (results.length > 1) {

@@ -42,7 +42,6 @@ const MonitorPage: React.FC = () => {
   const [prizeResults, setPrizeResults] = useState<
     { prize: Prize; isConsolation: boolean }[] | null
   >(null);
-  const [timeLeft, setTimeLeft] = useState(30);
   const [chancesToGrant, setChancesToGrant] = useState(1);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -71,7 +70,7 @@ const MonitorPage: React.FC = () => {
     if (!campaignId || document.hidden) return;
     try {
       const token = crypto.randomUUID();
-      const expires = new Date(Date.now() + 35000); // 35s to account for slight delays
+      const expires = new Date(Date.now() + 30000); // 30s validity
 
       await db
         .collection("campaigns")
@@ -84,7 +83,6 @@ const MonitorPage: React.FC = () => {
       setQrCodeUrl(
         `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(eventUrl)}`,
       );
-      setTimeLeft(30);
       setError(null);
     } catch (err: any) {
       console.error("Failed to generate event token:", err);
@@ -141,18 +139,12 @@ const MonitorPage: React.FC = () => {
   // QR Code generation and countdown timer
   useEffect(() => {
     let tokenInterval: number | undefined;
-    let countdownInterval: number | undefined;
-
     if (campaign && lotteryState === "waiting" && !error && isEventStarted) {
       generateToken();
       tokenInterval = window.setInterval(generateToken, 30000);
-      countdownInterval = window.setInterval(() => {
-        setTimeLeft((prev) => (prev > 0 ? prev - 1 : 0));
-      }, 1000);
     }
     return () => {
       if (tokenInterval) clearInterval(tokenInterval);
-      if (countdownInterval) clearInterval(countdownInterval);
     };
   }, [campaign, lotteryState, error, generateToken, isEventStarted]);
 
@@ -426,7 +418,7 @@ const MonitorPage: React.FC = () => {
           </div>
 
           <div className="w-full max-w-sm flex-shrink-0 mt-8">
-            <div className="flex items-center justify-center gap-4 mb-4">
+            <div className="flex items-center justify-center gap-4">
               <label
                 htmlFor="chancesToGrant"
                 className="font-medium text-slate-700"
@@ -444,23 +436,6 @@ const MonitorPage: React.FC = () => {
                 className="w-20 text-center font-bold text-lg border-slate-300 rounded-md shadow-sm focus:ring-2 focus:ring-[var(--theme-color)] focus:border-[var(--theme-color)]"
               />
             </div>
-            <div className="h-2.5 w-full bg-slate-200 rounded-full">
-              <div
-                className="h-2.5 rounded-full"
-                style={{
-                  width: `${(timeLeft / 30) * 100}%`,
-                  backgroundColor: themeColor,
-                  transition: timeLeft === 30 ? "none" : "width 1s linear",
-                }}
-              ></div>
-            </div>
-            <p className="mt-3 text-lg text-slate-600 text-center">
-              有効時間：
-              <span className="font-bold text-2xl text-slate-800 tabular-nums">
-                {timeLeft}
-              </span>
-              秒
-            </p>
           </div>
         </div>
       )}
