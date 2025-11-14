@@ -2512,58 +2512,61 @@ const CampaignEdit: React.FC = () => {
                 <span className="text-slate-600">当選数 (参加賞除く)</span>
               </div>
             </div>
-            <div className="flex h-64">
-              <div className="flex flex-col justify-between text-right pr-2 text-xs text-slate-500 py-2">
-                {yAxisLabels.map((item) => (
-                  <span key={item.label}>{item.label}</span>
-                ))}
-              </div>
-              <div className="flex-1 flex items-end gap-2 border-l border-b border-slate-200 p-2">
-                {sortedDailyData.map(([date, data]) => (
-                  <div
-                    key={date}
-                    className="flex-1 flex flex-col items-center justify-end h-full group relative"
-                    onMouseEnter={() => setHoveredDate(date)}
-                    onMouseLeave={() => setHoveredDate(null)}
-                  >
-                    {hoveredDate === date && (
-                      <div className="absolute bottom-full mb-2 w-max p-2 bg-slate-800 text-white text-xs rounded-md shadow-lg z-10 pointer-events-none transform -translate-x-1/2 left-1/2 whitespace-nowrap animate-fade-in">
-                        <p className="font-bold">
-                          {new Date(date).toLocaleDateString("ja-JP", {
-                            year: "numeric",
-                            month: "long",
-                            day: "numeric",
-                          })}
-                        </p>
-                        <div className="mt-1 border-t border-slate-600"></div>
-                        <div className="mt-1 space-y-0.5">
-                          <p>参加者: {data.participantCount}人</p>
-                          <p>当選者: {data.winCount}人</p>
+            <div className="overflow-x-auto">
+              <div className="flex min-h-[280px] min-w-fit">
+                <div className="flex flex-col justify-between text-right pr-2 text-xs text-slate-500 py-2 flex-shrink-0">
+                  {yAxisLabels.map((item) => (
+                    <span key={item.label}>{item.label}</span>
+                  ))}
+                </div>
+                <div className="flex-1 flex items-end gap-2 border-l border-b border-slate-200 p-2 pb-8 min-w-0">
+                  {sortedDailyData.map(([date, data]) => (
+                    <div
+                      key={date}
+                      className="flex-1 flex flex-col items-center justify-end min-w-0 group relative"
+                      style={{ height: "240px" }}
+                      onMouseEnter={() => setHoveredDate(date)}
+                      onMouseLeave={() => setHoveredDate(null)}
+                    >
+                      {hoveredDate === date && (
+                        <div className="absolute bottom-full mb-2 w-max p-2 bg-slate-800 text-white text-xs rounded-md shadow-lg z-10 pointer-events-none transform -translate-x-1/2 left-1/2 whitespace-nowrap animate-fade-in">
+                          <p className="font-bold">
+                            {new Date(date).toLocaleDateString("ja-JP", {
+                              year: "numeric",
+                              month: "long",
+                              day: "numeric",
+                            })}
+                          </p>
+                          <div className="mt-1 border-t border-slate-600"></div>
+                          <div className="mt-1 space-y-0.5">
+                            <p>参加者: {data.participantCount}人</p>
+                            <p>当選者: {data.winCount}人</p>
+                          </div>
                         </div>
+                      )}
+                      <div className="flex items-end justify-center w-full gap-px flex-1 min-h-0">
+                        <div
+                          className="w-1/2 bg-slate-400 group-hover:bg-slate-500 rounded-t-sm transition-colors"
+                          style={{
+                            height: `${(data.participantCount / maxDailyCount) * 100}%`,
+                          }}
+                        ></div>
+                        <div
+                          className="w-1/2 bg-emerald-400 group-hover:bg-emerald-500 rounded-t-sm transition-colors"
+                          style={{
+                            height: `${(data.winCount / maxDailyCount) * 100}%`,
+                          }}
+                        ></div>
                       </div>
-                    )}
-                    <div className="flex items-end justify-center w-full h-full gap-px">
-                      <div
-                        className="w-1/2 bg-slate-400 group-hover:bg-slate-500 rounded-t-sm transition-colors"
-                        style={{
-                          height: `${(data.participantCount / maxDailyCount) * 100}%`,
-                        }}
-                      ></div>
-                      <div
-                        className="w-1/2 bg-emerald-400 group-hover:bg-emerald-500 rounded-t-sm transition-colors"
-                        style={{
-                          height: `${(data.winCount / maxDailyCount) * 100}%`,
-                        }}
-                      ></div>
+                      <span className="text-[10px] text-slate-500 mt-1 whitespace-nowrap">
+                        {new Date(date).toLocaleDateString("ja-JP", {
+                          month: "2-digit",
+                          day: "2-digit",
+                        })}
+                      </span>
                     </div>
-                    <span className="text-[10px] text-slate-500 mt-2">
-                      {new Date(date).toLocaleDateString("ja-JP", {
-                        month: "2-digit",
-                        day: "2-digit",
-                      })}
-                    </span>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             </div>
           </div>
