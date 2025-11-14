@@ -297,6 +297,12 @@ const CampaignEdit: React.FC = () => {
     Map<string, number>
   >(new Map());
   const [isParticipantsLoading, setIsParticipantsLoading] = useState(false);
+  
+  // Pagination state
+  const PARTICIPANTS_PER_PAGE = 50;
+  const [participantsLastDoc, setParticipantsLastDoc] = useState<any>(null);
+  const [hasMoreParticipants, setHasMoreParticipants] = useState(false);
+  const [isLoadingMoreParticipants, setIsLoadingMoreParticipants] = useState(false);
   const [isActionLoading, setIsActionLoading] = useState<{
     id: string;
     action: "grant" | "delete" | "approved" | "rejected";
@@ -816,12 +822,34 @@ const CampaignEdit: React.FC = () => {
   const fetchDashboardData = useCallback(async () => {
     if (!campaignId) return;
     setIsParticipantsLoading(true);
+    // Reset pagination state
+    setParticipantsLastDoc(null);
+    setHasMoreParticipants(false);
     try {
-      const snapshot = await db
+      // Load only initial batch of participants to reduce Firebase reads
+      let participantsQuery = db
         .collection("participants")
         .where("campaignId", "==", campaignId)
-        .get();
-      const participantsData = snapshot.docs.map((doc: any) => {
+        .orderBy("wonAt", "desc")
+        .limit(PARTICIPANTS_PER_PAGE + 1); // Load one extra to check if there are more
+      
+      const snapshot = await participantsQuery.get();
+      const hasMore = snapshot.docs.length > PARTICIPANTS_PER_PAGE;
+      setHasMoreParticipants(hasMore);
+      
+      // Get only the first PARTICIPANTS_PER_PAGE documents
+      const docsToProcess = hasMore 
+        ? snapshot.docs.slice(0, PARTICIPANTS_PER_PAGE)
+        : snapshot.docs;
+      
+      // Store last document for pagination
+      if (hasMore && docsToProcess.length > 0) {
+        setParticipantsLastDoc(docsToProcess[docsToProcess.length - 1]);
+      } else {
+        setParticipantsLastDoc(null);
+      }
+      
+      const participantsData = docsToProcess.map((doc: any) => {
         const data = doc.data();
         const history = (data.couponUsageHistory || []).map((h: any) => ({
           store: h.store,
@@ -875,10 +903,8 @@ const CampaignEdit: React.FC = () => {
         } as Participant;
       }) as Participant[];
 
-      participantsData.sort(
-        (a, b) => (b.wonAt?.getTime() || 0) - (a.wonAt?.getTime() || 0),
-      );
-
+      // Data is already sorted by Firestore query (orderBy wonAt desc)
+      // No need to sort again
       setAllParticipants(participantsData);
 
       const overridesSnapshot = await db
@@ -892,9 +918,12 @@ const CampaignEdit: React.FC = () => {
       });
       setParticipantOverrides(overridesData);
 
+      // Load inquiries with limit (50 most recent)
       const inquiriesSnapshot = await db
         .collection("inquiries")
         .where("campaignId", "==", campaignId)
+        .orderBy("createdAt", "desc")
+        .limit(50)
         .get();
       const inquiriesData = inquiriesSnapshot.docs.map((doc: any) => ({
         id: doc.id,
@@ -903,14 +932,14 @@ const CampaignEdit: React.FC = () => {
           doc.data().createdAt as InstanceType<typeof Timestamp>
         )?.toDate(),
       })) as Inquiry[];
-      inquiriesData.sort(
-        (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
-      );
       setInquiries(inquiriesData);
 
+      // Load participation requests with limit (50 most recent)
       const requestsSnapshot = await db
         .collection("participationRequests")
         .where("campaignId", "==", campaignId)
+        .orderBy("createdAt", "desc")
+        .limit(50)
         .get();
       const requestsData = requestsSnapshot.docs.map((doc: any) => ({
         id: doc.id,
@@ -919,9 +948,6 @@ const CampaignEdit: React.FC = () => {
           doc.data().createdAt as InstanceType<typeof Timestamp>
         )?.toDate(),
       })) as ParticipationRequest[];
-      requestsData.sort(
-        (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
-      );
       setParticipationRequests(requestsData);
     } catch (err) {
       console.error("Failed to load dashboard data:", err);
@@ -929,7 +955,99 @@ const CampaignEdit: React.FC = () => {
     } finally {
       setIsParticipantsLoading(false);
     }
-  }, [campaignId, showToast]);
+  }, [campaignId, showToast, PARTICIPANTS_PER_PAGE]);
+
+  const loadMoreParticipants = useCallback(async () => {
+    if (!campaignId || !participantsLastDoc || isLoadingMoreParticipants) return;
+    
+    setIsLoadingMoreParticipants(true);
+    try {
+      let participantsQuery = db
+        .collection("participants")
+        .where("campaignId", "==", campaignId)
+        .orderBy("wonAt", "desc")
+        .startAfter(participantsLastDoc)
+        .limit(PARTICIPANTS_PER_PAGE + 1); // Load one extra to check if there are more
+      
+      const snapshot = await participantsQuery.get();
+      const hasMore = snapshot.docs.length > PARTICIPANTS_PER_PAGE;
+      setHasMoreParticipants(hasMore);
+      
+      // Get only the first PARTICIPANTS_PER_PAGE documents
+      const docsToProcess = hasMore 
+        ? snapshot.docs.slice(0, PARTICIPANTS_PER_PAGE)
+        : snapshot.docs;
+      
+      // Store last document for pagination
+      if (hasMore && docsToProcess.length > 0) {
+        setParticipantsLastDoc(docsToProcess[docsToProcess.length - 1]);
+      } else {
+        setParticipantsLastDoc(null);
+      }
+      
+      const newParticipantsData = docsToProcess.map((doc: any) => {
+        const data = doc.data();
+        const history = (data.couponUsageHistory || []).map((h: any) => ({
+          store: h.store,
+          usedAt: h.usedAt?.toDate ? h.usedAt.toDate() : h.usedAt,
+        }));
+        
+        // Convert wonAt to Date object, handling all possible formats
+        const rawWonAt = data.wonAt;
+        let wonAtDate: Date;
+        if (!rawWonAt) {
+          wonAtDate = new Date();
+        } else if (rawWonAt instanceof Date) {
+          wonAtDate = rawWonAt;
+        } else if (rawWonAt instanceof Timestamp) {
+          wonAtDate = rawWonAt.toDate();
+        } else if (rawWonAt.toDate && typeof rawWonAt.toDate === 'function') {
+          wonAtDate = rawWonAt.toDate();
+        } else if (rawWonAt.seconds !== undefined && rawWonAt.nanoseconds !== undefined) {
+          const timestamp = new Timestamp(rawWonAt.seconds, rawWonAt.nanoseconds);
+          wonAtDate = timestamp.toDate();
+        } else if (rawWonAt.seconds !== undefined) {
+          wonAtDate = new Date(rawWonAt.seconds * 1000);
+        } else if (typeof rawWonAt === 'string' || typeof rawWonAt === 'number') {
+          wonAtDate = new Date(rawWonAt);
+        } else {
+          wonAtDate = new Date();
+        }
+        
+        // Validate the converted date
+        if (!(wonAtDate instanceof Date) || isNaN(wonAtDate.getTime())) {
+          console.warn("Invalid wonAt date for participant:", doc.id, rawWonAt, wonAtDate);
+          wonAtDate = new Date();
+        }
+        
+        // Build participant object
+        return {
+          id: doc.id,
+          campaignId: data.campaignId,
+          userId: data.userId,
+          authInfo: data.authInfo,
+          wonAt: wonAtDate,
+          prizeId: data.prizeId,
+          prizeDetails: data.prizeDetails,
+          assignedUrl: data.assignedUrl,
+          couponUsed: data.couponUsed,
+          couponUsedCount: data.couponUsedCount,
+          couponUsageHistory: history,
+          shippingAddress: data.shippingAddress,
+          isConsolationPrize: data.isConsolationPrize,
+          questionnaireAnswers: data.questionnaireAnswers,
+        } as Participant;
+      }) as Participant[];
+      
+      // Append new participants to existing ones
+      setAllParticipants((prev) => [...prev, ...newParticipantsData]);
+    } catch (err) {
+      console.error("Failed to load more participants:", err);
+      showToast("追加の参加者データの読み込みに失敗しました", "error");
+    } finally {
+      setIsLoadingMoreParticipants(false);
+    }
+  }, [campaignId, participantsLastDoc, isLoadingMoreParticipants, PARTICIPANTS_PER_PAGE, showToast]);
 
   useEffect(() => {
     if (
@@ -2953,6 +3071,24 @@ const CampaignEdit: React.FC = () => {
         )}
         {tableScroll.right && (
           <div className="absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-white via-white/90 to-transparent pointer-events-none transition-opacity"></div>
+        )}
+        {hasMoreParticipants && (
+          <div className="mt-6 flex justify-center">
+            <button
+              onClick={loadMoreParticipants}
+              disabled={isLoadingMoreParticipants}
+              className="px-6 py-3 bg-slate-800 text-white font-medium rounded-lg hover:bg-slate-900 disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+            >
+              {isLoadingMoreParticipants ? (
+                <>
+                  <Spinner size="sm" />
+                  <span>読み込み中...</span>
+                </>
+              ) : (
+                <span>さらに読み込む ({allParticipants.length}件表示中)</span>
+              )}
+            </button>
+          </div>
         )}
       </div>
     );
