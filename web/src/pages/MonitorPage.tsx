@@ -79,7 +79,10 @@ const MonitorPage: React.FC = () => {
         .doc(token)
         .set({ expires, chances: chancesToGrant });
 
-      const eventUrl = `${window.location.origin}${window.location.pathname.replace(/\/monitor\/.*/, "")}/#/event/${campaignId}?token=${token}`;
+      // Use path-based routing (no hash) since the app uses BrowserRouter
+      // Remove any monitor path and construct the event URL
+      const basePath = window.location.pathname.replace(/\/monitor\/.*/, "");
+      const eventUrl = `${window.location.origin}${basePath}/event/${campaignId}?token=${token}`;
       setQrCodeUrl(
         `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(eventUrl)}`,
       );
