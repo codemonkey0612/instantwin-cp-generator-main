@@ -303,6 +303,16 @@ const CampaignEdit: React.FC = () => {
   const [participantsLastDoc, setParticipantsLastDoc] = useState<any>(null);
   const [hasMoreParticipants, setHasMoreParticipants] = useState(false);
   const [isLoadingMoreParticipants, setIsLoadingMoreParticipants] = useState(false);
+  
+  // Graph date range state
+  const [graphStartDate, setGraphStartDate] = useState<Date | null>(null);
+  const [graphEndDate, setGraphEndDate] = useState<Date | null>(null);
+  const [graphParticipants, setGraphParticipants] = useState<Participant[]>([]);
+  const [isLoadingGraphData, setIsLoadingGraphData] = useState(false);
+  
+  // Temporary date inputs (before confirmation)
+  const [tempStartDate, setTempStartDate] = useState<string>('');
+  const [tempEndDate, setTempEndDate] = useState<string>('');
   const [isActionLoading, setIsActionLoading] = useState<{
     id: string;
     action: "grant" | "delete" | "approved" | "rejected";
@@ -1049,6 +1059,190 @@ const CampaignEdit: React.FC = () => {
     }
   }, [campaignId, participantsLastDoc, isLoadingMoreParticipants, PARTICIPANTS_PER_PAGE, showToast]);
 
+  // Fetch graph participants based on date range
+  const fetchGraphParticipants = useCallback(async (startDate: Date | null, endDate: Date | null) => {
+    if (!campaignId) return;
+    
+    setIsLoadingGraphData(true);
+    try {
+      // Query all participants for the campaign (we'll filter by date in memory)
+      // This avoids needing composite indexes for date range queries
+      let query = db
+        .collection("participants")
+        .where("campaignId", "==", campaignId)
+        .orderBy("wonAt", "desc");
+      
+      const snapshot = await query.get();
+      
+      let graphParticipantsData = snapshot.docs.map((doc: any) => {
+        const data = doc.data();
+        const history = (data.couponUsageHistory || []).map((h: any) => ({
+          store: h.store,
+          usedAt: h.usedAt?.toDate ? h.usedAt.toDate() : h.usedAt,
+        }));
+        
+        const rawWonAt = data.wonAt;
+        let wonAtDate: Date;
+        if (!rawWonAt) {
+          wonAtDate = new Date();
+        } else if (rawWonAt instanceof Date) {
+          wonAtDate = rawWonAt;
+        } else if (rawWonAt instanceof Timestamp) {
+          wonAtDate = rawWonAt.toDate();
+        } else if (rawWonAt.toDate && typeof rawWonAt.toDate === 'function') {
+          wonAtDate = rawWonAt.toDate();
+        } else if (rawWonAt.seconds !== undefined && rawWonAt.nanoseconds !== undefined) {
+          const timestamp = new Timestamp(rawWonAt.seconds, rawWonAt.nanoseconds);
+          wonAtDate = timestamp.toDate();
+        } else if (rawWonAt.seconds !== undefined) {
+          wonAtDate = new Date(rawWonAt.seconds * 1000);
+        } else if (typeof rawWonAt === 'string' || typeof rawWonAt === 'number') {
+          wonAtDate = new Date(rawWonAt);
+        } else {
+          wonAtDate = new Date();
+        }
+        
+        if (!(wonAtDate instanceof Date) || isNaN(wonAtDate.getTime())) {
+          wonAtDate = new Date();
+        }
+        
+        return {
+          id: doc.id,
+          campaignId: data.campaignId,
+          userId: data.userId,
+          authInfo: data.authInfo,
+          wonAt: wonAtDate,
+          prizeId: data.prizeId,
+          prizeDetails: data.prizeDetails,
+          assignedUrl: data.assignedUrl,
+          couponUsed: data.couponUsed,
+          couponUsedCount: data.couponUsedCount,
+          couponUsageHistory: history,
+          shippingAddress: data.shippingAddress,
+          isConsolationPrize: data.isConsolationPrize,
+          questionnaireAnswers: data.questionnaireAnswers,
+        } as Participant;
+      }) as Participant[];
+      
+      // Filter by date range in memory
+      if (startDate || endDate) {
+        graphParticipantsData = graphParticipantsData.filter((p) => {
+          if (!p.wonAt) return false;
+          const wonAtDate = p.wonAt;
+          
+          // Normalize dates to compare only the date part (ignore time)
+          // Extract year, month, day for comparison
+          const getDateOnly = (date: Date) => {
+            const year = date.getFullYear();
+            const month = date.getMonth();
+            const day = date.getDate();
+            return { year, month, day };
+          };
+          
+          const wonAtOnly = getDateOnly(wonAtDate);
+          
+          if (startDate) {
+            const startOnly = getDateOnly(startDate);
+            // Exclude dates before start date
+            // Compare: wonAt must be >= startDate
+            if (wonAtOnly.year < startOnly.year) return false;
+            if (wonAtOnly.year === startOnly.year && wonAtOnly.month < startOnly.month) return false;
+            if (wonAtOnly.year === startOnly.year && wonAtOnly.month === startOnly.month && wonAtOnly.day < startOnly.day) return false;
+          }
+          
+          if (endDate) {
+            const endOnly = getDateOnly(endDate);
+            // Include dates up to and including end date
+            // Compare: wonAt must be <= endDate
+            if (wonAtOnly.year > endOnly.year) return false;
+            if (wonAtOnly.year === endOnly.year && wonAtOnly.month > endOnly.month) return false;
+            if (wonAtOnly.year === endOnly.year && wonAtOnly.month === endOnly.month && wonAtOnly.day > endOnly.day) return false;
+          }
+          
+          return true;
+        });
+      }
+      
+      setGraphParticipants(graphParticipantsData);
+    } catch (err: any) {
+      console.error("Failed to load graph data:", err);
+      showToast("グラフデータの読み込みに失敗しました", "error");
+    } finally {
+      setIsLoadingGraphData(false);
+    }
+  }, [campaignId, showToast]);
+
+  // Initialize graph data when campaign loads
+  const graphInitialized = useRef(false);
+  useEffect(() => {
+    if (campaign && campaignId && !graphInitialized.current) {
+      // Load all data initially (no filter)
+      fetchGraphParticipants(null, null);
+      graphInitialized.current = true;
+    }
+  }, [campaign, campaignId, fetchGraphParticipants]);
+
+  // Apply date range filter (called when user clicks confirm button)
+  const applyDateRangeFilter = useCallback(async () => {
+    if (!campaignId) return;
+    
+    if (!tempStartDate || !tempEndDate) {
+      showToast("開始日と終了日の両方を選択してください", "error");
+      return;
+    }
+    
+    const [startYear, startMonth, startDay] = tempStartDate.split('-').map(Number);
+    const [endYear, endMonth, endDay] = tempEndDate.split('-').map(Number);
+    
+    const startDate = new Date(startYear, startMonth - 1, startDay);
+    const endDate = new Date(endYear, endMonth - 1, endDay);
+    
+    // Validate date range
+    if (startDate > endDate) {
+      showToast("開始日は終了日より前の日付を選択してください", "error");
+      return;
+    }
+    
+    // Apply filter
+    setGraphStartDate(startDate);
+    setGraphEndDate(endDate);
+    
+    // Clear temp dates after applying
+    setTempStartDate('');
+    setTempEndDate('');
+    
+    await fetchGraphParticipants(startDate, endDate);
+  }, [campaignId, tempStartDate, tempEndDate, fetchGraphParticipants, showToast]);
+  
+  // Clear date range filter
+  const clearDateRangeFilter = useCallback(async () => {
+    setTempStartDate('');
+    setTempEndDate('');
+    setGraphStartDate(null);
+    setGraphEndDate(null);
+    if (campaignId) {
+      await fetchGraphParticipants(null, null);
+    }
+  }, [campaignId, fetchGraphParticipants]);
+  
+  // Helper function for date formatting (used in multiple places)
+  const formatDateForInput = useCallback((date: Date): string => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }, []);
+  
+  // Sync temp dates when graph dates are set (for editing existing filter)
+  useEffect(() => {
+    if (graphStartDate && !tempStartDate) {
+      setTempStartDate(formatDateForInput(graphStartDate));
+    }
+    if (graphEndDate && !tempEndDate) {
+      setTempEndDate(formatDateForInput(graphEndDate));
+    }
+  }, [graphStartDate, graphEndDate, tempStartDate, tempEndDate, formatDateForInput]);
+
   useEffect(() => {
     if (
       activeMenu === "ダッシュボード" ||
@@ -1060,11 +1254,20 @@ const CampaignEdit: React.FC = () => {
   }, [activeMenu, fetchDashboardData]);
 
   const dashboardData = useMemo(() => {
-    if (!allParticipants || !campaign) return null;
+    if (!campaign) return null;
+    
+    // Use graphParticipants when BOTH dates are set (complete range), otherwise use allParticipants
+    // This applies the date filter to ALL dashboard statistics, not just the graph
+    const hasCompleteDateRange = graphStartDate !== null && graphEndDate !== null;
+    const filteredParticipants = hasCompleteDateRange 
+      ? graphParticipants 
+      : allParticipants;
+    
+    if (!allParticipants) return null;
 
-    const totalParticipants = allParticipants.length;
+    const totalParticipants = filteredParticipants.length;
 
-    const prizeCounts = allParticipants.reduce(
+    const prizeCounts = filteredParticipants.reduce(
       (acc, p) => {
         const prizeTitle =
           p.prizeDetails?.title ||
@@ -1077,13 +1280,16 @@ const CampaignEdit: React.FC = () => {
       {} as Record<string, number>,
     );
 
-    const dailyData = allParticipants.reduce(
+    const dailyData = filteredParticipants.reduce(
       (acc, p) => {
         if (p.wonAt) {
           // Create a copy of the date before modifying it to avoid mutating the original
           const dateCopy = new Date(p.wonAt.getTime());
           dateCopy.setHours(0, 0, 0, 0);
-          const date = dateCopy.toISOString().split("T")[0];
+          const year = dateCopy.getFullYear();
+          const month = String(dateCopy.getMonth() + 1).padStart(2, "0");
+          const day = String(dateCopy.getDate()).padStart(2, "0");
+          const date = `${year}-${month}-${day}`;
           if (!acc[date]) {
             acc[date] = { participantCount: 0, winCount: 0 };
           }
@@ -1103,7 +1309,7 @@ const CampaignEdit: React.FC = () => {
         const textAnswers: string[] = [];
         let totalAnswersForQuestion = 0;
 
-        allParticipants.forEach((p) => {
+        filteredParticipants.forEach((p) => {
           const answer = p.questionnaireAnswers?.[field.id];
           if (answer !== undefined && answer !== null) {
             const isAnswered = Array.isArray(answer)
@@ -1145,7 +1351,7 @@ const CampaignEdit: React.FC = () => {
     ].filter(Boolean) as Prize[];
     const prizeStatusData = allPrizesInCampaign
       .map((prize) => {
-        const winners = allParticipants.filter((p) => p.prizeId === prize.id);
+        const winners = filteredParticipants.filter((p) => p.prizeId === prize.id);
         const totalWinners = winners.length;
         let totalUsed = 0;
         const storeUsage = new Map<string, number>();
@@ -1213,7 +1419,7 @@ const CampaignEdit: React.FC = () => {
       prizeStatusData,
       inquiries,
     };
-  }, [allParticipants, campaign, inquiries]);
+  }, [allParticipants, campaign, inquiries, graphParticipants, graphStartDate, graphEndDate]);
 
   const totalPrizeAllocation = useMemo(() => {
     return prizes.reduce(
@@ -2382,24 +2588,20 @@ const CampaignEdit: React.FC = () => {
     );
   };
 
+  // Helper function for date display formatting
+  const formatDateForDisplay = (date: Date): string => {
+    return date.toLocaleDateString('ja-JP', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+  };
+
   const renderDashboard = () => {
     if (isParticipantsLoading) {
       return (
         <div className="flex justify-center items-center h-64">
           <Spinner />
-        </div>
-      );
-    }
-
-    if (!dashboardData || dashboardData.totalParticipants === 0) {
-      return (
-        <div className="text-center py-12 px-6 bg-slate-50 rounded-lg border-2 border-dashed">
-          <h3 className="text-lg font-medium text-slate-700">
-            参加データがありません
-          </h3>
-          <p className="text-slate-500 mt-2">
-            キャンペーンに最初の参加者があると、ここにデータが表示されます。
-          </p>
         </div>
       );
     }
@@ -2411,7 +2613,14 @@ const CampaignEdit: React.FC = () => {
       questionnaireResults,
       prizeStatusData,
       inquiries,
-    } = dashboardData;
+    } = dashboardData || {
+      totalParticipants: 0,
+      prizeCounts: {},
+      dailyData: {},
+      questionnaireResults: [],
+      prizeStatusData: [],
+      inquiries: [],
+    };
     const sortedDailyData = Object.entries(dailyData).sort(
       ([dateA], [dateB]) =>
         new Date(dateA).getTime() - new Date(dateB).getTime(),
@@ -2430,6 +2639,75 @@ const CampaignEdit: React.FC = () => {
 
     return (
       <div className="space-y-8">
+        {/* Date Range Selector - Applies to entire dashboard */}
+        <div className="bg-white p-4 rounded-lg shadow-md border border-slate-200">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <h4 className="text-base font-semibold text-slate-800">
+                期間フィルター
+              </h4>
+              <p className="text-xs text-slate-500 mt-1">
+                選択した期間のデータのみをダッシュボード全体に表示します
+              </p>
+            </div>
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 w-full sm:w-auto">
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-slate-600 whitespace-nowrap">開始日:</label>
+                <input
+                  type="date"
+                  value={tempStartDate || (graphStartDate ? formatDateForInput(graphStartDate) : '')}
+                  onChange={(e) => {
+                    setTempStartDate(e.target.value);
+                  }}
+                  className="px-2 py-1 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-500"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-slate-600 whitespace-nowrap">終了日:</label>
+                <input
+                  type="date"
+                  value={tempEndDate || (graphEndDate ? formatDateForInput(graphEndDate) : '')}
+                  onChange={(e) => {
+                    setTempEndDate(e.target.value);
+                  }}
+                  className="px-2 py-1 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-500"
+                />
+              </div>
+              <button
+                onClick={applyDateRangeFilter}
+                disabled={!tempStartDate || !tempEndDate}
+                className="px-4 py-1 text-xs bg-slate-800 text-white rounded-md hover:bg-slate-900 transition-colors whitespace-nowrap disabled:bg-slate-400 disabled:cursor-not-allowed"
+              >
+                適用
+              </button>
+              {(graphStartDate || graphEndDate) && (
+                <button
+                  onClick={clearDateRangeFilter}
+                  className="px-3 py-1 text-xs bg-slate-100 text-slate-700 rounded-md hover:bg-slate-200 transition-colors whitespace-nowrap"
+                >
+                  すべて表示
+                </button>
+              )}
+            </div>
+          </div>
+          {graphStartDate && graphEndDate && (
+            <div className="mt-2 p-2 bg-slate-50 border border-slate-200 rounded text-xs text-slate-700">
+              表示中: {formatDateForDisplay(graphStartDate)} ～ {formatDateForDisplay(graphEndDate)}
+            </div>
+          )}
+          {(!tempStartDate || !tempEndDate) && (tempStartDate !== '' || tempEndDate !== '') && (
+            <div className="mt-2 p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
+              開始日と終了日の両方を選択して「適用」をクリックしてください
+            </div>
+          )}
+          {isLoadingGraphData && (
+            <div className="flex justify-center items-center py-2 mt-2">
+              <Spinner size="sm" />
+              <span className="ml-2 text-sm text-slate-600">データを読み込み中...</span>
+            </div>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="bg-white p-6 rounded-lg shadow-md border border-slate-200">
             <h4 className="text-sm font-medium text-slate-500">総参加者数</h4>
@@ -6151,3 +6429,4 @@ exports.sendInquiryEmail = functions.firestore
 };
 
 export default CampaignEdit;
+
