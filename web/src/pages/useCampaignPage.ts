@@ -19,6 +19,7 @@ import {
   storePendingParticipationCampaign,
   getAndClearPendingParticipationCampaign
 } from "../utils/campaignAuth";
+import { transferAnonymousUserData } from "../utils/participantTransfer";
 
 export type PresentationTexts = {
   multiParticipationButton: (n: number) => string;
@@ -293,8 +294,36 @@ export const useCampaignPage = () => {
           );
         if (email) {
           try {
-            // DO NOT set isParticipating here - participation should only happen when user clicks the button
+            const currentUser = auth.currentUser;
+            const anonymousUserId = currentUser?.isAnonymous ? currentUser.uid : null;
+            const targetCampaignId = campaignId || getAndClearStoredCampaignId();
+            
+            // If there's an anonymous user, sign out and sign in with email link, then transfer data
+            // Email link authentication doesn't support account linking, so we transfer data instead
+            if (currentUser && currentUser.isAnonymous) {
+              console.log("Anonymous user detected, will transfer data after email link sign-in");
+              await auth.signOut();
+            }
+            
+            // Sign in with email link
             await auth.signInWithEmailLink(email, window.location.href);
+            
+            // Transfer participant data if we had an anonymous user
+            const newUser = auth.currentUser;
+            if (anonymousUserId && newUser && targetCampaignId) {
+              try {
+                await transferAnonymousUserData(
+                  anonymousUserId,
+                  newUser.uid,
+                  targetCampaignId,
+                );
+                console.log("Transferred participant data from anonymous to authenticated user");
+              } catch (transferError: any) {
+                console.error("Failed to transfer participant data:", transferError);
+                // Don't fail the auth flow if transfer fails, just log it
+              }
+            }
+            
             window.localStorage.removeItem("emailForSignIn");
             
             // Mark campaign as authenticated after email link sign-in

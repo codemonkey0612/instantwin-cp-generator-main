@@ -4,6 +4,7 @@ import type { Campaign, AuthProviders } from "../../types";
 import Spinner from "../Spinner";
 import { captureException } from "@sentry/react";
 import { setCampaignAuth, storeCampaignIdForAuth } from "../../utils/campaignAuth";
+import { transferAnonymousUserData } from "../../utils/participantTransfer";
 // import { useParticipationTicket } from "../../pages/hooks/useParticipationTicket";
 
 interface AuthFlowProps {
@@ -96,27 +97,79 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
       }
 
       const currentUser = auth.currentUser;
+      const anonymousUserId = currentUser?.isAnonymous ? currentUser.uid : null;
       console.log("Current user before auth:", currentUser?.uid, currentUser?.isAnonymous);
       
-      // If there's an anonymous user, we need to sign out first before authenticating
-      // Otherwise, Firebase might not complete the authentication properly
+      let result: firebase.auth.UserCredential;
+      
+      // If there's an anonymous user, try to link the account instead of signing out
+      // This preserves their lottery results
       if (currentUser && currentUser.isAnonymous) {
-        console.log("Signing out anonymous user before auth");
-        await auth.signOut();
+        try {
+          console.log("Attempting to link anonymous account with provider:", provider.providerId);
+          result = await currentUser.linkWithPopup(provider);
+          console.log("Account linking successful:", result.user?.uid, result.user?.email);
+        } catch (linkError: any) {
+          // If linking fails (e.g., email already exists), sign out anonymous and sign in normally
+          // Then transfer the participant data
+          if (
+            linkError.code === "auth/credential-already-in-use" ||
+            linkError.code === "auth/email-already-in-use" ||
+            linkError.code === "auth/account-exists-with-different-credential"
+          ) {
+            console.log("Account already exists, signing out anonymous and signing in normally");
+            await auth.signOut();
+            result = await auth.signInWithPopup(provider);
+            
+            // Transfer participant data from anonymous user to authenticated user
+            if (anonymousUserId && result.user && campaign.id) {
+              try {
+                await transferAnonymousUserData(
+                  anonymousUserId,
+                  result.user.uid,
+                  campaign.id,
+                );
+                console.log("Transferred participant data from anonymous to authenticated user");
+              } catch (transferError: any) {
+                console.error("Failed to transfer participant data:", transferError);
+                // Don't fail the auth flow if transfer fails, just log it
+              }
+            }
+          } else {
+            // For other errors, sign out and try normal sign-in
+            console.log("Linking failed, signing out and trying normal sign-in");
+            await auth.signOut();
+            result = await auth.signInWithPopup(provider);
+            
+            // Transfer participant data if we had an anonymous user
+            if (anonymousUserId && result.user && campaign.id) {
+              try {
+                await transferAnonymousUserData(
+                  anonymousUserId,
+                  result.user.uid,
+                  campaign.id,
+                );
+                console.log("Transferred participant data from anonymous to authenticated user");
+              } catch (transferError: any) {
+                console.error("Failed to transfer participant data:", transferError);
+              }
+            }
+          }
+        }
+      } else {
+        // No anonymous user, proceed with normal sign-in
+        console.log("Using popup sign-in with provider:", provider.providerId);
+        result = await auth.signInWithPopup(provider);
+        console.log("Popup sign-in successful:", result.user?.uid, result.user?.email);
       }
 
-      // Use popup for both localhost and production - more reliable and better UX
-      console.log("Using popup sign-in with provider:", provider.providerId);
-      const result = await auth.signInWithPopup(provider);
-      console.log("Popup sign-in successful:", result.user?.uid, result.user?.email);
-
-      // Mark campaign as authenticated after successful popup sign-in
+      // Mark campaign as authenticated after successful sign-in
       if (campaign.id && result.user && !result.user.isAnonymous) {
         setCampaignAuth(campaign.id);
         console.log("Campaign auth set for:", campaign.id);
         window.localStorage.removeItem("pendingCampaignAuth");
         setModalStep?.("confirm");
-      closeModal?.();
+        closeModal?.();
       }
       setIsAuthLoading(false);
     } catch (error: any) {
@@ -309,7 +362,46 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
     setAuthError(null);
     setIsAuthLoading(true);
     try {
-      const userCredential = await confirmationResult.confirm(verificationCode);
+      const currentUser = auth.currentUser;
+      const anonymousUserId = currentUser?.isAnonymous ? currentUser.uid : null;
+      
+      let userCredential: firebase.auth.UserCredential;
+      
+      // If there's an anonymous user, try to link the account
+      if (currentUser && currentUser.isAnonymous) {
+        try {
+          console.log("Attempting to link anonymous account with phone number");
+          const phoneCredential = firebase.auth.PhoneAuthProvider.credential(
+            confirmationResult.verificationId,
+            verificationCode,
+          );
+          userCredential = await currentUser.linkWithCredential(phoneCredential);
+          console.log("Account linking successful:", userCredential.user?.uid);
+        } catch (linkError: any) {
+          // If linking fails, sign out anonymous and sign in normally, then transfer data
+          console.log("Linking failed, signing out and trying normal sign-in");
+          await auth.signOut();
+          userCredential = await confirmationResult.confirm(verificationCode);
+          
+          // Transfer participant data if we had an anonymous user
+          if (anonymousUserId && userCredential.user && campaign.id) {
+            try {
+              await transferAnonymousUserData(
+                anonymousUserId,
+                userCredential.user.uid,
+                campaign.id,
+              );
+              console.log("Transferred participant data from anonymous to authenticated user");
+            } catch (transferError: any) {
+              console.error("Failed to transfer participant data:", transferError);
+            }
+          }
+        }
+      } else {
+        // No anonymous user, proceed with normal verification
+        userCredential = await confirmationResult.confirm(verificationCode);
+      }
+      
       // Mark campaign as authenticated after successful SMS verification
       if (campaign.id && userCredential.user && !userCredential.user.isAnonymous) {
         setCampaignAuth(campaign.id);
@@ -317,7 +409,8 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
         closeModal?.();
         setModalStep?.("confirm");
       }
-    } catch (error) {
+      setIsAuthLoading(false);
+    } catch (error: any) {
       setAuthError("認証コードが正しくありません。");
       setIsAuthLoading(false);
       captureException(error, { level: "error" });

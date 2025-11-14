@@ -4,6 +4,7 @@ import { auth, functions } from "../firebase";
 import { captureException } from "@sentry/react";
 import Spinner from "../components/Spinner";
 import { setCampaignAuth, getAndClearStoredCampaignId, getCampaignIdFromUrl } from "../utils/campaignAuth";
+import { transferAnonymousUserData } from "../utils/participantTransfer";
 
 /**
  * LINE OAuth callback handler
@@ -57,11 +58,31 @@ const LineAuthCallback: React.FC = () => {
         });
         const firebaseCustomToken = result.data.customToken;
 
+        // Check if there's an anonymous user before signing in
+        const currentUser = auth.currentUser;
+        const anonymousUserId = currentUser?.isAnonymous ? currentUser.uid : null;
+        const campaignId = getAndClearStoredCampaignId() || getCampaignIdFromUrl();
+        
         // Sign in with the custom token
         await auth.signInWithCustomToken(firebaseCustomToken);
+        
+        // Transfer participant data if we had an anonymous user
+        const newUser = auth.currentUser;
+        if (anonymousUserId && newUser && campaignId) {
+          try {
+            await transferAnonymousUserData(
+              anonymousUserId,
+              newUser.uid,
+              campaignId,
+            );
+            console.log("Transferred participant data from anonymous to authenticated user");
+          } catch (transferError: any) {
+            console.error("Failed to transfer participant data:", transferError);
+            // Don't fail the auth flow if transfer fails, just log it
+          }
+        }
 
         // Mark campaign as authenticated
-        const campaignId = getAndClearStoredCampaignId() || getCampaignIdFromUrl();
         if (campaignId) {
           setCampaignAuth(campaignId);
         }
