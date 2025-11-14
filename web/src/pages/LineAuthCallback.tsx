@@ -76,9 +76,28 @@ const LineAuthCallback: React.FC = () => {
               campaignId,
             );
             console.log("Transferred participant data from anonymous to authenticated user");
+            // Wait a bit for Firestore to update before redirecting
+            await new Promise(resolve => setTimeout(resolve, 500));
           } catch (transferError: any) {
             console.error("Failed to transfer participant data:", transferError);
             // Don't fail the auth flow if transfer fails, just log it
+            // Still wait a bit in case some data was transferred
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        } else if (anonymousUserId && newUser && !campaignId) {
+          // If campaignId is not available, transfer all campaigns' data
+          console.warn("CampaignId not available, transferring all participant data");
+          try {
+            await transferAnonymousUserData(
+              anonymousUserId,
+              newUser.uid,
+              undefined, // Transfer all campaigns
+            );
+            console.log("Transferred all participant data from anonymous to authenticated user");
+            await new Promise(resolve => setTimeout(resolve, 500));
+          } catch (transferError: any) {
+            console.error("Failed to transfer participant data:", transferError);
+            await new Promise(resolve => setTimeout(resolve, 500));
           }
         }
 

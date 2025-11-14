@@ -13,6 +13,7 @@ interface AuthFlowProps {
   closeModal?: () => void;
   lastTicketToken?: string | null;
   setModalStep?: (step: "closed" | "auth" | "confirm" | "participating" | "result") => void;
+  onAuthSuccess?: () => void; // Callback to reload participant data after successful auth and transfer
 }
 
 const providerDetails = {
@@ -48,6 +49,7 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
   isSavingResult = false,
   closeModal,
   setModalStep,
+  onAuthSuccess,
   // lastTicketToken,
 }) => {
   const [authView, setAuthView] = useState<
@@ -109,6 +111,11 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
           console.log("Attempting to link anonymous account with provider:", provider.providerId);
           result = await currentUser.linkWithPopup(provider);
           console.log("Account linking successful:", result.user?.uid, result.user?.email);
+          // Account linking succeeded - userId stays the same, so no transfer needed
+          // But we should reload data to reflect the authentication status change
+          setTimeout(() => {
+            onAuthSuccess?.();
+          }, 300);
         } catch (linkError: any) {
           // If linking fails (e.g., email already exists), sign out anonymous and sign in normally
           // Then transfer the participant data
@@ -130,9 +137,17 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
                   campaign.id,
                 );
                 console.log("Transferred participant data from anonymous to authenticated user");
+                // Wait a bit for Firestore to update, then reload data
+                setTimeout(() => {
+                  onAuthSuccess?.();
+                }, 500);
               } catch (transferError: any) {
                 console.error("Failed to transfer participant data:", transferError);
                 // Don't fail the auth flow if transfer fails, just log it
+                // Still trigger reload in case some data was transferred
+                setTimeout(() => {
+                  onAuthSuccess?.();
+                }, 500);
               }
             }
           } else {
@@ -150,8 +165,16 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
                   campaign.id,
                 );
                 console.log("Transferred participant data from anonymous to authenticated user");
+                // Wait a bit for Firestore to update, then reload data
+                setTimeout(() => {
+                  onAuthSuccess?.();
+                }, 500);
               } catch (transferError: any) {
                 console.error("Failed to transfer participant data:", transferError);
+                // Still trigger reload in case some data was transferred
+                setTimeout(() => {
+                  onAuthSuccess?.();
+                }, 500);
               }
             }
           }
@@ -170,6 +193,12 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
         window.localStorage.removeItem("pendingCampaignAuth");
         setModalStep?.("confirm");
         closeModal?.();
+        // If no transfer happened (account linking succeeded), still trigger reload
+        if (!anonymousUserId) {
+          setTimeout(() => {
+            onAuthSuccess?.();
+          }, 300);
+        }
       }
       setIsAuthLoading(false);
     } catch (error: any) {
@@ -377,6 +406,11 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
           );
           userCredential = await currentUser.linkWithCredential(phoneCredential);
           console.log("Account linking successful:", userCredential.user?.uid);
+          // Account linking succeeded - userId stays the same, so no transfer needed
+          // But we should reload data to reflect the authentication status change
+          setTimeout(() => {
+            onAuthSuccess?.();
+          }, 300);
         } catch (linkError: any) {
           // If linking fails, sign out anonymous and sign in normally, then transfer data
           console.log("Linking failed, signing out and trying normal sign-in");
@@ -392,8 +426,16 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
                 campaign.id,
               );
               console.log("Transferred participant data from anonymous to authenticated user");
+              // Wait a bit for Firestore to update, then reload data
+              setTimeout(() => {
+                onAuthSuccess?.();
+              }, 500);
             } catch (transferError: any) {
               console.error("Failed to transfer participant data:", transferError);
+              // Still trigger reload in case some data was transferred
+              setTimeout(() => {
+                onAuthSuccess?.();
+              }, 500);
             }
           }
         }
@@ -408,6 +450,12 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
         // Close modal and proceed to next step after successful authentication
         closeModal?.();
         setModalStep?.("confirm");
+        // If no transfer happened (account linking succeeded), still trigger reload
+        if (!anonymousUserId) {
+          setTimeout(() => {
+            onAuthSuccess?.();
+          }, 300);
+        }
       }
       setIsAuthLoading(false);
     } catch (error: any) {

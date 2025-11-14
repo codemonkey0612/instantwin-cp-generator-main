@@ -318,10 +318,42 @@ export const useCampaignPage = () => {
                   targetCampaignId,
                 );
                 console.log("Transferred participant data from anonymous to authenticated user");
+                // Wait a bit for Firestore to update, then reload data
+                setTimeout(() => {
+                  loadParticipantData();
+                }, 500);
               } catch (transferError: any) {
                 console.error("Failed to transfer participant data:", transferError);
                 // Don't fail the auth flow if transfer fails, just log it
+                // Still trigger reload in case some data was transferred
+                setTimeout(() => {
+                  loadParticipantData();
+                }, 500);
               }
+            } else if (anonymousUserId && newUser && !targetCampaignId) {
+              // If campaignId is not available, transfer all campaigns' data
+              console.warn("CampaignId not available, transferring all participant data");
+              try {
+                await transferAnonymousUserData(
+                  anonymousUserId,
+                  newUser.uid,
+                  undefined, // Transfer all campaigns
+                );
+                console.log("Transferred all participant data from anonymous to authenticated user");
+                setTimeout(() => {
+                  loadParticipantData();
+                }, 500);
+              } catch (transferError: any) {
+                console.error("Failed to transfer participant data:", transferError);
+                setTimeout(() => {
+                  loadParticipantData();
+                }, 500);
+              }
+            } else if (newUser && !anonymousUserId) {
+              // No anonymous user, but still reload data after auth
+              setTimeout(() => {
+                loadParticipantData();
+              }, 300);
             }
             
             window.localStorage.removeItem("emailForSignIn");

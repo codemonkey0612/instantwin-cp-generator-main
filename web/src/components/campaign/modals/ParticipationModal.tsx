@@ -27,6 +27,7 @@ const ParticipationModal: React.FC<ParticipationModalProps> = (props) => {
     getContrastingTextColor,
     presentationTexts,
     lastTicketToken,
+    loadParticipantData,
   } = props;
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -145,6 +146,7 @@ const ParticipationModal: React.FC<ParticipationModalProps> = (props) => {
             isSavingResult={promptToSaveResult}
             closeModal={closeModal}
             setModalStep={setModalStep}
+            onAuthSuccess={loadParticipantData}
           />
         );
 
