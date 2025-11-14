@@ -192,7 +192,7 @@ const AuthFlow: React.FC<AuthFlowProps> = ({
         console.log("Campaign auth set for:", campaign.id);
         window.localStorage.removeItem("pendingCampaignAuth");
         setModalStep?.("confirm");
-        closeModal?.();
+      closeModal?.();
         // If no transfer happened (account linking succeeded), still trigger reload
         if (!anonymousUserId) {
           setTimeout(() => {

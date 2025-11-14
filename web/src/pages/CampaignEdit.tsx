@@ -308,6 +308,7 @@ const CampaignEdit: React.FC = () => {
   const [graphStartDate, setGraphStartDate] = useState<Date | null>(null);
   const [graphEndDate, setGraphEndDate] = useState<Date | null>(null);
   const [graphParticipants, setGraphParticipants] = useState<Participant[]>([]);
+  const [allGraphParticipants, setAllGraphParticipants] = useState<Participant[]>([]);
   const [isLoadingGraphData, setIsLoadingGraphData] = useState(false);
   
   // Temporary date inputs (before confirmation)
@@ -1074,7 +1075,7 @@ const CampaignEdit: React.FC = () => {
       
       const snapshot = await query.get();
       
-      let graphParticipantsData = snapshot.docs.map((doc: any) => {
+      const participantsData = snapshot.docs.map((doc: any) => {
         const data = doc.data();
         const history = (data.couponUsageHistory || []).map((h: any) => ({
           store: h.store,
@@ -1124,42 +1125,55 @@ const CampaignEdit: React.FC = () => {
         } as Participant;
       }) as Participant[];
       
+      setAllGraphParticipants(participantsData);
+      
+      let graphParticipantsData = participantsData;
+      
       // Filter by date range in memory
       if (startDate || endDate) {
-        graphParticipantsData = graphParticipantsData.filter((p) => {
-          if (!p.wonAt) return false;
-          const wonAtDate = p.wonAt;
-          
-          // Normalize dates to compare only the date part (ignore time)
-          // Extract year, month, day for comparison
-          const getDateOnly = (date: Date) => {
-            const year = date.getFullYear();
-            const month = date.getMonth();
-            const day = date.getDate();
-            return { year, month, day };
-          };
-          
-          const wonAtOnly = getDateOnly(wonAtDate);
-          
-          if (startDate) {
-            const startOnly = getDateOnly(startDate);
-            // Exclude dates before start date
-            // Compare: wonAt must be >= startDate
-            if (wonAtOnly.year < startOnly.year) return false;
-            if (wonAtOnly.year === startOnly.year && wonAtOnly.month < startOnly.month) return false;
-            if (wonAtOnly.year === startOnly.year && wonAtOnly.month === startOnly.month && wonAtOnly.day < startOnly.day) return false;
+        const normalizeDate = (date: Date) => {
+          const normalized = new Date(date);
+          normalized.setHours(0, 0, 0, 0);
+          return normalized.getTime();
+        };
+        
+        const matchesRange = (date: Date | null | undefined) => {
+          if (!date) return false;
+          const timestamp = normalizeDate(date);
+          if (startDate && timestamp < normalizeDate(startDate)) {
+            return false;
           }
-          
-          if (endDate) {
-            const endOnly = getDateOnly(endDate);
-            // Include dates up to and including end date
-            // Compare: wonAt must be <= endDate
-            if (wonAtOnly.year > endOnly.year) return false;
-            if (wonAtOnly.year === endOnly.year && wonAtOnly.month > endOnly.month) return false;
-            if (wonAtOnly.year === endOnly.year && wonAtOnly.month === endOnly.month && wonAtOnly.day > endOnly.day) return false;
+          if (endDate && timestamp > normalizeDate(endDate)) {
+            return false;
           }
-          
           return true;
+        };
+        
+        graphParticipantsData = graphParticipantsData.filter((p) => {
+          const wonAtMatches = matchesRange(p.wonAt);
+          
+          const usageMatches = (p.couponUsageHistory || []).some((usage) => {
+            let usedAt: Date | null = null;
+            const rawUsedAt = usage.usedAt;
+            if (!rawUsedAt) {
+              usedAt = null;
+            } else if (rawUsedAt instanceof Date) {
+              usedAt = rawUsedAt;
+            } else if (typeof rawUsedAt.toDate === "function") {
+              usedAt = rawUsedAt.toDate();
+            } else if (
+              typeof rawUsedAt === "object" &&
+              rawUsedAt.seconds !== undefined &&
+              rawUsedAt.nanoseconds !== undefined
+            ) {
+              usedAt = new Timestamp(rawUsedAt.seconds, rawUsedAt.nanoseconds).toDate();
+            } else if (typeof rawUsedAt === "number" || typeof rawUsedAt === "string") {
+              usedAt = new Date(rawUsedAt);
+            }
+            return usedAt ? matchesRange(usedAt) : false;
+          });
+          
+          return wonAtMatches || usageMatches;
         });
       }
       
@@ -1256,14 +1270,20 @@ const CampaignEdit: React.FC = () => {
   const dashboardData = useMemo(() => {
     if (!campaign) return null;
     
-    // Use graphParticipants when BOTH dates are set (complete range), otherwise use allParticipants
+    // Prefer the exhaustive participant list fetched for graphs.
+    const baseParticipants =
+      allGraphParticipants && allGraphParticipants.length > 0
+        ? allGraphParticipants
+        : allParticipants;
+    
+    // Use graphParticipants when BOTH dates are set (complete range), otherwise use the full dataset
     // This applies the date filter to ALL dashboard statistics, not just the graph
     const hasCompleteDateRange = graphStartDate !== null && graphEndDate !== null;
-    const filteredParticipants = hasCompleteDateRange 
-      ? graphParticipants 
-      : allParticipants;
+    const filteredParticipants = hasCompleteDateRange
+      ? graphParticipants
+      : baseParticipants;
     
-    if (!allParticipants) return null;
+    if (!baseParticipants) return null;
 
     const totalParticipants = filteredParticipants.length;
 
@@ -1349,9 +1369,12 @@ const CampaignEdit: React.FC = () => {
       ...(campaign.prizes || []),
       campaign.consolationPrize,
     ].filter(Boolean) as Prize[];
+    const prizeStatusSource = hasCompleteDateRange
+      ? filteredParticipants
+      : baseParticipants;
     const prizeStatusData = allPrizesInCampaign
       .map((prize) => {
-        const winners = filteredParticipants.filter((p) => p.prizeId === prize.id);
+        const winners = prizeStatusSource.filter((p) => p.prizeId === prize.id);
         const totalWinners = winners.length;
         let totalUsed = 0;
         const storeUsage = new Map<string, number>();
@@ -1363,15 +1386,30 @@ const CampaignEdit: React.FC = () => {
 
         winners.forEach((winner) => {
           if (prize.type === "e-coupon") {
-            if ((winner.couponUsedCount || 0) > 0) {
-              totalUsed++;
-            }
-            (winner.couponUsageHistory || []).forEach((history) => {
+            const usageHistory = (winner.couponUsageHistory || []).filter(
+              (history) => history,
+            );
+            const recordedUsage = usageHistory.length;
+            const reportedUsage = winner.couponUsedCount || 0;
+            const usageCount = Math.max(recordedUsage, reportedUsage);
+
+            totalUsed += usageCount;
+
+            usageHistory.forEach((history) => {
+              const storeName = history.store || "店舗未設定";
               storeUsage.set(
-                history.store,
-                (storeUsage.get(history.store) || 0) + 1,
+                storeName,
+                (storeUsage.get(storeName) || 0) + 1,
               );
             });
+
+            const untrackedUsage = usageCount - recordedUsage;
+            if (untrackedUsage > 0) {
+              storeUsage.set(
+                "店舗未設定",
+                (storeUsage.get("店舗未設定") || 0) + untrackedUsage,
+              );
+            }
           } else if (prize.type === "mail-delivery") {
             if (
               winner.shippingAddress &&
@@ -1419,7 +1457,7 @@ const CampaignEdit: React.FC = () => {
       prizeStatusData,
       inquiries,
     };
-  }, [allParticipants, campaign, inquiries, graphParticipants, graphStartDate, graphEndDate]);
+  }, [allParticipants, allGraphParticipants, campaign, inquiries, graphParticipants, graphStartDate, graphEndDate]);
 
   const totalPrizeAllocation = useMemo(() => {
     return prizes.reduce(

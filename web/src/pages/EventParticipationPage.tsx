@@ -322,12 +322,12 @@ const EventParticipationPage: React.FC = () => {
 
       await resultRef.set(
         {
-          results: resultsToSave.map((r) => ({
-            prize: r.prizeDetails,
-            isConsolation: !!r.isConsolationPrize,
-          })),
+        results: resultsToSave.map((r) => ({
+          prize: r.prizeDetails,
+          isConsolation: !!r.isConsolationPrize,
+        })),
           wonAt: FieldValue.serverTimestamp(),
-          userId: auth.currentUser.uid,
+        userId: auth.currentUser.uid,
         },
         { merge: true },
       );
