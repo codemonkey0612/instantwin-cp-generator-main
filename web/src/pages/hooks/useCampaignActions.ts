@@ -317,19 +317,44 @@ export const useCampaignActions = ({
     }
 
     try {
-      const increment = FieldValue.increment(1);
-      const newHistoryEntry = { store: selectedStore, usedAt: Timestamp.now() };
-      const arrayUnion = FieldValue.arrayUnion(newHistoryEntry);
-      await db.collection("participants").doc(targetRecord.id).update({
-        couponUsedCount: increment,
-        couponUsageHistory: arrayUnion,
+      // Use transaction to ensure atomicity - both couponUsedCount and couponUsageHistory
+      // must be updated together to prevent data inconsistencies
+      const participantRef = db.collection("participants").doc(targetRecord.id);
+      await db.runTransaction(async (transaction) => {
+        const participantDoc = await transaction.get(participantRef);
+        if (!participantDoc.exists) {
+          throw new Error("Participant record not found");
+        }
+
+        const currentData = participantDoc.data();
+        const currentCount = currentData?.couponUsedCount || 0;
+        const currentHistory = currentData?.couponUsageHistory || [];
+        const usageLimit = prizeDetailsInModal.couponUsageLimit || 1;
+
+        // Verify usage limit
+        if (currentCount >= usageLimit) {
+          throw new Error("Usage limit already reached");
+        }
+
+        // Prepare new values atomically
+        const newCount = currentCount + 1;
+        const newHistoryEntry = { store: selectedStore, usedAt: Timestamp.now() };
+        const newHistory = [...currentHistory, newHistoryEntry];
+
+        // Update both fields atomically in transaction
+        transaction.update(participantRef, {
+          couponUsedCount: newCount,
+          couponUsageHistory: newHistory,
+        });
       });
+
       loadParticipantData(); // Reload data to get fresh state
       setShowStoreSelectionModal(false);
       setSelectedStore(null);
       setShowCouponUsedConfirmation(true);
     } catch (error) {
-      alert("クーポンの利用に失敗しました。");
+      console.error("Coupon usage error:", error);
+      alert("クーポンの利用に失敗しました。もう一度お試しください。");
       captureException(error, { level: "error" });
     }
   };
