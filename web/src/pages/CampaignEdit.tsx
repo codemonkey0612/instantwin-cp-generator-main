@@ -1285,7 +1285,9 @@ const CampaignEdit: React.FC = () => {
     
     if (!baseParticipants) return null;
 
-    const totalParticipants = filteredParticipants.length;
+    // Count unique users to prevent duplicate counting when user has multiple lottery chances
+    const uniqueUserIds = new Set(filteredParticipants.map(p => p.userId).filter(Boolean));
+    const totalParticipants = uniqueUserIds.size;
 
     const prizeCounts = filteredParticipants.reduce(
       (acc, p) => {
@@ -1302,7 +1304,7 @@ const CampaignEdit: React.FC = () => {
 
     const dailyData = filteredParticipants.reduce(
       (acc, p) => {
-        if (p.wonAt) {
+        if (p.wonAt && p.userId) {
           // Create a copy of the date before modifying it to avoid mutating the original
           const dateCopy = new Date(p.wonAt.getTime());
           dateCopy.setHours(0, 0, 0, 0);
@@ -1311,23 +1313,34 @@ const CampaignEdit: React.FC = () => {
           const day = String(dateCopy.getDate()).padStart(2, "0");
           const date = `${year}-${month}-${day}`;
           if (!acc[date]) {
-            acc[date] = { participantCount: 0, winCount: 0 };
+            acc[date] = { participantCount: 0, winCount: 0, uniqueUsers: new Set<string>() };
           }
-          acc[date].participantCount += 1;
+          // Only count unique users per day to prevent duplicate counting
+          if (!acc[date].uniqueUsers.has(p.userId)) {
+            acc[date].uniqueUsers.add(p.userId);
+            acc[date].participantCount += 1;
+          }
           if (!p.isConsolationPrize) {
             acc[date].winCount += 1;
           }
         }
         return acc;
       },
-      {} as Record<string, { participantCount: number; winCount: number }>,
+      {} as Record<string, { participantCount: number; winCount: number; uniqueUsers: Set<string> }>,
     );
+    // Clean up the uniqueUsers Set from the result (it was only used for deduplication)
+    Object.keys(dailyData).forEach(date => {
+      delete (dailyData[date] as any).uniqueUsers;
+    });
 
     const questionnaireResults = (campaign.questionnaireFields || []).map(
       (field) => {
         const answerCounts: Record<string, number> = {};
         const textAnswers: string[] = [];
         let totalAnswersForQuestion = 0;
+        // Track which users have already been counted for all question types
+        // to prevent duplicate counting when user has multiple lottery chances
+        const countedUsers = new Set<string>();
 
         filteredParticipants.forEach((p) => {
           const answer = p.questionnaireAnswers?.[field.id];
@@ -1335,7 +1348,15 @@ const CampaignEdit: React.FC = () => {
             const isAnswered = Array.isArray(answer)
               ? answer.length > 0
               : typeof answer === "string" && answer.trim() !== "";
-            if (isAnswered) {
+            if (isAnswered && p.userId) {
+              // For all question types, only count once per user
+              // to prevent duplicate counting when user has multiple lottery chances
+              if (countedUsers.has(p.userId)) {
+                // Skip this participant - already counted for this user
+                return;
+              }
+              countedUsers.add(p.userId);
+
               totalAnswersForQuestion++;
               if (Array.isArray(answer)) {
                 // Checkbox
