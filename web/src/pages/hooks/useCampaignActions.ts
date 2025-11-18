@@ -269,11 +269,18 @@ export const useCampaignActions = ({
       return;
     }
 
-    const usageLimit =
-      (interactionState.prizeDetailsInModal as any).totalUsageLimit ||
-      prizeDetails.couponUsageLimit ||
-      1;
-    if ((couponUsedCount || 0) >= usageLimit) return;
+    // Check if there's at least one record with remaining uses
+    const recordsForThisPrize = allParticipantRecords.filter(
+      (p) => p.prizeId === prizeDetails.id,
+    );
+    const hasAvailableRecord = recordsForThisPrize.some(
+      (p) => (p.couponUsedCount || 0) < (p.prizeDetails.couponUsageLimit || 1),
+    );
+
+    if (!hasAvailableRecord) {
+      alert("このクーポンは既に使用済みです。");
+      return;
+    }
 
     if (
       prizeDetails.type === "e-coupon" &&
@@ -282,6 +289,10 @@ export const useCampaignActions = ({
     ) {
       setShowStoreSelectionModal(true);
     } else {
+      // Set a default store value if no store selection is needed
+      if (!interactionState.selectedStore) {
+        setSelectedStore("店舗未設定");
+      }
       if (
         window.confirm(
           "このクーポンを使用済みにしますか？この操作は元に戻せません。",
@@ -295,7 +306,10 @@ export const useCampaignActions = ({
   // FIX: Refactored to not take arguments and use state from closure scope.
   const confirmCouponUsage = async () => {
     const { prizeDetailsInModal, selectedStore } = interactionState;
-    if (!prizeDetailsInModal || !selectedStore) return;
+    if (!prizeDetailsInModal) return;
+
+    // Use default store if not selected (for coupons without store selection)
+    const storeToUse = selectedStore || "店舗未設定";
 
     if (!isPrizeDateValid(prizeDetailsInModal)) {
       alert("このクーポンは利用可能期間外です。");
@@ -329,16 +343,17 @@ export const useCampaignActions = ({
         const currentData = participantDoc.data();
         const currentCount = currentData?.couponUsedCount || 0;
         const currentHistory = currentData?.couponUsageHistory || [];
-        const usageLimit = prizeDetailsInModal.couponUsageLimit || 1;
+        // Use the individual record's usage limit, not the aggregated totalUsageLimit
+        const usageLimit = targetRecord.prizeDetails.couponUsageLimit || 1;
 
-        // Verify usage limit
+        // Verify usage limit - check if there's at least 1 use remaining
         if (currentCount >= usageLimit) {
           throw new Error("Usage limit already reached");
         }
 
         // Prepare new values atomically
         const newCount = currentCount + 1;
-        const newHistoryEntry = { store: selectedStore, usedAt: Timestamp.now() };
+        const newHistoryEntry = { store: storeToUse, usedAt: Timestamp.now() };
         const newHistory = [...currentHistory, newHistoryEntry];
 
         // Update both fields atomically in transaction
