@@ -637,7 +637,7 @@ const CampaignEdit: React.FC = () => {
           setEventModeEnabled(campaignData.eventMode?.enabled || false);
 
           const defaultPageContent = getDefaultPageContent();
-          let initializedPageContent = data.pageContent
+          const initializedPageContent = data.pageContent
             ? { ...defaultPageContent, ...data.pageContent }
             : defaultPageContent;
 
@@ -674,7 +674,7 @@ const CampaignEdit: React.FC = () => {
           const savedPresentationSettings =
             data.presentationSettings as PresentationSettings;
 
-          let initialPresentationSettings = {
+          const initialPresentationSettings = {
             ...defaultPresentationSettings,
             ...savedPresentationSettings,
             soundSettings: {
@@ -838,7 +838,7 @@ const CampaignEdit: React.FC = () => {
     setHasMoreParticipants(false);
     try {
       // Load only initial batch of participants to reduce Firebase reads
-      let participantsQuery = db
+      const participantsQuery = db
         .collection("participants")
         .where("campaignId", "==", campaignId)
         .orderBy("wonAt", "desc")
@@ -973,7 +973,7 @@ const CampaignEdit: React.FC = () => {
     
     setIsLoadingMoreParticipants(true);
     try {
-      let participantsQuery = db
+      const participantsQuery = db
         .collection("participants")
         .where("campaignId", "==", campaignId)
         .orderBy("wonAt", "desc")
@@ -1068,7 +1068,7 @@ const CampaignEdit: React.FC = () => {
     try {
       // Query all participants for the campaign (we'll filter by date in memory)
       // This avoids needing composite indexes for date range queries
-      let query = db
+      const query = db
         .collection("participants")
         .where("campaignId", "==", campaignId)
         .orderBy("wonAt", "desc");
