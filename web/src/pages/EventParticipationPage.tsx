@@ -201,9 +201,19 @@ const EventParticipationPage: React.FC = () => {
           0,
           Math.round((expiresAt.getTime() - Date.now()) / 1000),
         );
+        const totalRemaining =
+          typeof tokenData.remainingChances === "number"
+            ? tokenData.remainingChances
+            : tokenData.chances || 1;
+        if (totalRemaining <= 0) {
+          setError(
+            "このQRコードの参加可能回数は終了しました。モニターで新しいQRコードをスキャンしてください。",
+          );
+          return;
+        }
         setTokenExpiresAt(expiresAt);
         setTimeLeft(Math.min(EVENT_TOKEN_DISPLAY_LIMIT, initialRemaining));
-        setChancesFromToken(tokenData.chances || 1);
+        setChancesFromToken(totalRemaining);
 
         setEventState("ready");
       } catch (err: any) {
@@ -252,29 +262,43 @@ const EventParticipationPage: React.FC = () => {
       setError("QRコードの有効期限が切れました。");
       return;
     }
+    if (chancesFromToken <= 0) {
+      setError(
+        "このQRコードの参加可能回数は終了しました。モニターで新しいQRコードをスキャンしてください。",
+      );
+      return;
+    }
 
     setEventState("participating");
+    setMultiplePrizeResults(null);
     try {
       const tokenRef = db
         .collection("campaigns")
         .doc(campaignId)
         .collection("eventTokens")
         .doc(token);
-      const resultRef = db
-        .collection("campaigns")
-        .doc(campaignId)
-        .collection("eventResults")
-        .doc(token);
-
-      const results: Participant[] = [];
+      let nextRemainingChances = chancesFromToken;
 
       await db.runTransaction(async (transaction: any) => {
         const tokenDoc = await transaction.get(tokenRef);
         if (!tokenDoc.exists || tokenDoc.data().expires.toDate() < new Date())
           throw new Error("このQRコードは無効か、期限切れです。");
-        if ((await transaction.get(resultRef)).exists)
-          throw new Error("このQRコードは既に使用されています。");
+        const tokenData = tokenDoc.data();
+        const remaining =
+          typeof tokenData.remainingChances === "number"
+            ? tokenData.remainingChances
+            : tokenData.chances || 1;
+        if (remaining <= 0) {
+          throw new Error("NO_CHANCES_LEFT");
+        }
+        nextRemainingChances = remaining - 1;
+        transaction.update(tokenRef, {
+          remainingChances: nextRemainingChances,
+          lastUsedAt: FieldValue.serverTimestamp(),
+          ...(remaining - 1 <= 0 && { depletedAt: FieldValue.serverTimestamp() }),
+        });
       });
+      setChancesFromToken(nextRemainingChances);
 
       // Get last participation time for interval check
       let lastParticipationTime: Date | null = null;
@@ -301,50 +325,48 @@ const EventParticipationPage: React.FC = () => {
         }
       }
 
-      for (let i = 0; i < chancesFromToken; i++) {
-        const result = await runLotteryTransaction({
-          campaignId,
-          user: auth.currentUser,
-          alreadyWonPrizeIds: new Set(),
-          pendingAnswers: {},
-          lastParticipationTime: i === 0 ? lastParticipationTime : null, // Only check interval for first participation
-        });
-        results.push(result);
-        // Update last participation time for next iteration
-        if (result.wonAt) {
-          lastParticipationTime = result.wonAt;
-        }
-      }
+      const result = await runLotteryTransaction({
+        campaignId,
+        user: auth.currentUser,
+        alreadyWonPrizeIds: new Set(),
+        pendingAnswers: {},
+        lastParticipationTime,
+      });
 
-      const winningResults = results.filter((r) => r.prizeId !== "loss");
+      const resultRef = db
+        .collection("campaigns")
+        .doc(campaignId)
+        .collection("eventResults")
+        .doc();
+      const winningResults = result.prizeId !== "loss" ? [result] : [];
       const resultsToSave =
-        winningResults.length > 0 ? winningResults : [results[0]];
+        winningResults.length > 0 ? winningResults : [result];
 
-      await resultRef.set(
-        {
+      await resultRef.set({
         results: resultsToSave.map((r) => ({
           prize: r.prizeDetails,
           isConsolation: !!r.isConsolationPrize,
         })),
-          wonAt: FieldValue.serverTimestamp(),
+        wonAt: FieldValue.serverTimestamp(),
         userId: auth.currentUser.uid,
-        },
-        { merge: true },
-      );
-      await tokenRef.delete();
+        tokenId: token,
+        remainingChances: nextRemainingChances,
+      });
 
-      if (results.length > 1) {
-        setMultiplePrizeResults(results);
-      } else {
-        setPrizeResult(results[0].prizeDetails);
-      }
+      setPrizeResult(result.prizeDetails);
 
       setTimeout(() => {
         setEventState("fading");
       }, 3000);
     } catch (err: any) {
       console.error("Lottery error:", err);
-      setError(err.message || "抽選に失敗しました。");
+      if (err.message === "NO_CHANCES_LEFT") {
+        setError(
+          "このQRコードの参加可能回数は終了しました。モニターで新しいQRコードをスキャンしてください。",
+        );
+      } else {
+        setError(err.message || "抽選に失敗しました。");
+      }
     }
   }, [campaign, campaignId, token, timeLeft, chancesFromToken]);
 
@@ -412,10 +434,7 @@ const EventParticipationPage: React.FC = () => {
         const buttonText =
           campaign?.presentationSettings?.participationButtonText ||
           "抽選スタート！";
-        const fullButtonText =
-          chancesFromToken > 1
-            ? `${chancesFromToken}回 ${buttonText}`
-            : buttonText;
+        const fullButtonText = buttonText;
         return (
           <div className="text-center">
             {campaign?.showNameOnPublicPage && (
@@ -436,6 +455,15 @@ const EventParticipationPage: React.FC = () => {
             >
               {fullButtonText}
             </button>
+            {chancesFromToken > 0 && (
+              <p className="text-center text-slate-500 mt-3 text-sm">
+                このQRコードで残り
+                <span className="font-semibold mx-1 text-slate-700">
+                  {chancesFromToken}
+                </span>
+                回参加できます。
+              </p>
+            )}
             {timeLeft !== null && (
               <p className="text-center text-slate-500 mt-4">
                 有効期限まで:{" "}

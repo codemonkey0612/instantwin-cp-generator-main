@@ -6,7 +6,7 @@ import React, {
   useMemo,
 } from "react";
 import { useParams } from "react-router-dom";
-import { db } from "../firebase";
+import { db, FieldValue } from "../firebase";
 import type { Campaign, Prize } from "../types";
 import Spinner from "../components/Spinner";
 
@@ -77,7 +77,13 @@ const MonitorPage: React.FC = () => {
         .doc(campaignId)
         .collection("eventTokens")
         .doc(token)
-        .set({ expires, chances: chancesToGrant });
+        .set({
+          expires,
+          chances: chancesToGrant,
+          remainingChances: chancesToGrant,
+          createdAt: FieldValue.serverTimestamp(),
+          lastUsedAt: null,
+        });
 
       // Use path-based routing (no hash) since the app uses BrowserRouter
       // Remove any monitor path and construct the event URL

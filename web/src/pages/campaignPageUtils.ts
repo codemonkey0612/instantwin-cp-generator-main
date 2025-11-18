@@ -1,5 +1,5 @@
 // pages/campaignPageUtils.ts
-import { firebase, db, Timestamp } from "../firebase";
+import { firebase, db } from "../firebase";
 import type { Campaign, Participant, Prize } from "../types";
 
 export const getContrastingTextColor = (
@@ -257,16 +257,13 @@ export const runLotteryTransaction = async ({
     }
 
     const newParticipantRef = db.collection("participants").doc();
-    const newParticipantData: Omit<Participant, "id" | "wonAt"> & {
-      wonAt: firebase.firestore.Timestamp;
-    } = {
+    const participantPayload: Omit<Participant, "id" | "wonAt"> = {
       campaignId: campaignId,
       userId: user.uid,
       authInfo: {
         provider: user.providerData[0]?.providerId || "anonymous",
         identifier: user.email || user.phoneNumber || user.uid,
       },
-      wonAt: Timestamp.now(),
       prizeId: wonPrize ? wonPrize.id : "loss",
       prizeDetails: wonPrize
         ? JSON.parse(JSON.stringify(wonPrize))
@@ -286,8 +283,12 @@ export const runLotteryTransaction = async ({
       couponUsageHistory: [],
       ...(assignedUrl && { assignedUrl: assignedUrl }),
     };
+    const wonAtDate = new Date();
 
-    transaction.set(newParticipantRef, newParticipantData);
+    transaction.set(newParticipantRef, {
+      ...participantPayload,
+      wonAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
 
     if (wonPrize) {
       if (isConsolationWin && consolationPrize) {
@@ -312,9 +313,9 @@ export const runLotteryTransaction = async ({
       }
     }
     return {
-      ...newParticipantData,
+      ...participantPayload,
       id: newParticipantRef.id,
-      wonAt: newParticipantData.wonAt.toDate(),
+      wonAt: wonAtDate,
     } as Participant;
   });
 };
