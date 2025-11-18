@@ -1154,7 +1154,7 @@ const CampaignEdit: React.FC = () => {
           
           const usageMatches = (p.couponUsageHistory || []).some((usage) => {
             let usedAt: Date | null = null;
-            const rawUsedAt = usage.usedAt;
+            const rawUsedAt: any = usage.usedAt;
             if (!rawUsedAt) {
               usedAt = null;
             } else if (rawUsedAt instanceof Date) {

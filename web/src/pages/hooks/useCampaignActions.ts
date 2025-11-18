@@ -1,5 +1,5 @@
 import React, { useCallback, useRef } from "react";
-import { firebase, db, storage, Timestamp, FieldValue } from "../../firebase";
+import { firebase, db, storage, Timestamp } from "../../firebase";
 import type { Campaign, Participant } from "../../types";
 import { runLotteryTransaction, isPrizeDateValid } from "../campaignPageUtils";
 import { captureException } from "@sentry/react";
@@ -17,7 +17,7 @@ type UseCampaignActionsProps = {
   modalState: any; // From useCampaignState
   formState: any; // From useCampaignState
   interactionState: any; // From useCampaignState
-  loadParticipantData: () => void;
+  loadParticipantData: (preserveCurrentRecord?: boolean) => void;
   availableChances: number;
 };
 
@@ -261,8 +261,7 @@ export const useCampaignActions = ({
 
   const handleUseCoupon = async () => {
     if (!interactionState.prizeDetailsInModal) return;
-    const { prizeDetails, couponUsedCount } =
-      interactionState.prizeDetailsInModal;
+    const { prizeDetails } = interactionState.prizeDetailsInModal;
 
     if (!isPrizeDateValid(prizeDetails)) {
       alert("このクーポンは利用可能期間外です。");

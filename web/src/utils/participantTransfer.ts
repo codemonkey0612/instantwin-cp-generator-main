@@ -1,5 +1,4 @@
 import { db } from "../firebase";
-import type { Participant } from "../types";
 
 /**
  * Transfers all participant records from one userId to another
