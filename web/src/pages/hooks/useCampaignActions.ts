@@ -43,6 +43,7 @@ export const useCampaignActions = ({
 
   const {
     useMultipleChances,
+    setUseMultipleChances,
     setQuestionnaireError,
     pendingAnswersRef,
     setApprovalFormError,
@@ -67,6 +68,7 @@ export const useCampaignActions = ({
     async (useMultiple: boolean) => {
       setAuthError(null);
       setModalStep("participating");
+      setMultipleLotteryResults([]); // clear stale multi-results from previous participation
 
       const currentUser = user;
       if (!campaignId || !currentUser || !campaign) {
@@ -145,6 +147,9 @@ export const useCampaignActions = ({
 
           setParticipationCount((prev) => prev + chancesToUse);
           setMultipleLotteryResults(results);
+          if (useMultipleChances) {
+            setUseMultipleChances(false);
+          }
           pendingAnswersRef.current = null;
           // Delay reload to allow modal to transition to result step first
           // Pass true to preserveCurrentRecord to avoid clearing the result during transition
@@ -161,6 +166,7 @@ export const useCampaignActions = ({
           });
 
           setParticipationCount((prev) => prev + 1);
+          setMultipleLotteryResults([]);
           setParticipantRecord(resultParticipant);
           pendingAnswersRef.current = null;
 
@@ -223,6 +229,8 @@ export const useCampaignActions = ({
       availableChances,
       setParticipantRecord,
       setMultipleLotteryResults,
+      useMultipleChances,
+      setUseMultipleChances,
     ],
   );
 

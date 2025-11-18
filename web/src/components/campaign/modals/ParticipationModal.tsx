@@ -379,11 +379,26 @@ const ParticipationModal: React.FC<ParticipationModalProps> = (props) => {
         if (isMultipleResult) {
           const summary = multipleLotteryResults.reduce(
             (acc, result) => {
-              const prize = result.prizeDetails;
-              const key = prize.id;
+              const prizeId =
+                result.prizeId ||
+                result.prizeDetails?.id ||
+                "loss";
+              const normalizedPrize: Prize = result.prizeDetails
+                ? { ...result.prizeDetails, id: prizeId }
+                : {
+                    id: prizeId,
+                    title: prizeId === "loss" ? "ハズレ" : "未定義の景品",
+                    rank: "-",
+                    description: "",
+                    imageUrl: "",
+                    stock: 0,
+                    unlimitedStock: true,
+                    type: "url",
+                  };
+              const key = prizeId;
               if (!acc[key]) {
                 acc[key] = {
-                  prize,
+                  prize: normalizedPrize,
                   count: 0,
                   isConsolationPrize: !!result.isConsolationPrize,
                 };
