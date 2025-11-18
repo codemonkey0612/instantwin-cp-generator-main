@@ -270,9 +270,12 @@ export const useCampaignActions = ({
     }
 
     // Check if there's at least one record with remaining uses
-    const recordsForThisPrize = allParticipantRecords.filter(
-      (p) => p.prizeId === prizeDetails.id,
-    );
+    const prizeId =
+      prizeDetails.id ||
+      (interactionState.prizeDetailsInModal as Participant).prizeId;
+    const recordsForThisPrize = prizeId
+      ? allParticipantRecords.filter((p) => p.prizeId === prizeId)
+      : [];
     const hasAvailableRecord = recordsForThisPrize.some(
       (p) => (p.couponUsedCount || 0) < (p.prizeDetails.couponUsageLimit || 1),
     );
@@ -316,9 +319,11 @@ export const useCampaignActions = ({
       return;
     }
 
-    const recordsForThisPrize = allParticipantRecords.filter(
-      (p) => p.prizeId === prizeDetailsInModal.prizeId,
-    );
+    const prizeId =
+      prizeDetailsInModal.prizeId || prizeDetailsInModal.prizeDetails?.id;
+    const recordsForThisPrize = prizeId
+      ? allParticipantRecords.filter((p) => p.prizeId === prizeId)
+      : [];
     const targetRecord = recordsForThisPrize.find(
       (p) => (p.couponUsedCount || 0) < (p.prizeDetails.couponUsageLimit || 1),
     );
