@@ -729,30 +729,36 @@ export const useCampaignPage = () => {
   const handleAuthInitiation = async () => {
     modalState.setAuthError(null);
 
-    // Mark that user wants to participate - this ensures participation continues after authentication
-    // This is set when user clicks the button, not when authentication happens
-    isParticipating.current = true;
-    if (campaignId) {
-      storePendingParticipationCampaign(campaignId);
-    }
-
-    // Check if campaign requires authentication and if user is authenticated for this campaign
     const requiresAuth = campaign?.participantAuthMethod === "required";
-    const isAuthenticatedForThisCampaign = campaignId 
+    const isAuthenticatedForThisCampaign = campaignId
       ? isAuthenticatedForCampaign(campaignId)
       : false;
+    const needsCampaignAuth = requiresAuth && !isAuthenticatedForThisCampaign;
+    const needsAnonymousSignIn = !user;
+    const shouldDeferParticipation = needsCampaignAuth || needsAnonymousSignIn;
 
-    if (user) {
-      // If user is logged in but campaign requires auth and they're not authenticated for this campaign
-      if (requiresAuth && !isAuthenticatedForThisCampaign) {
-        setModalStep("auth");
-        return;
+    if (!shouldDeferParticipation) {
+      // User is already authenticated for this campaign; no need to defer participation
+      isParticipating.current = false;
+      if (campaignId) {
+        getAndClearPendingParticipationCampaign();
       }
       continueParticipationFlow();
       return;
     }
 
-    if (campaign?.participantAuthMethod === "required") {
+    // From this point on we need to defer participation (either waiting for auth or sign-in)
+    isParticipating.current = true;
+    if (campaignId) {
+      storePendingParticipationCampaign(campaignId);
+    }
+
+    if (user && needsCampaignAuth) {
+      setModalStep("auth");
+      return;
+    }
+
+    if (requiresAuth && !user) {
       setModalStep("auth");
       return;
     }

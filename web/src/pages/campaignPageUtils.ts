@@ -100,6 +100,7 @@ interface LotteryParams {
   alreadyWonPrizeIds: Set<string>;
   pendingAnswers: Record<string, string | string[]>;
   lastParticipationTime?: Date | null; // Last participation time for interval check
+  skipParticipationLimitCheck?: boolean; // Skip participation limit check (for event mode)
 }
 
 // The core lottery logic as a standalone function
@@ -109,8 +110,45 @@ export const runLotteryTransaction = async ({
   alreadyWonPrizeIds,
   pendingAnswers,
   lastParticipationTime,
+  skipParticipationLimitCheck = false,
 }: LotteryParams): Promise<Participant> => {
+  console.log("[runLotteryTransaction] Called", {
+    campaignId,
+    userId: user?.uid,
+    skipParticipationLimitCheck,
+    stack: new Error().stack?.split('\n').slice(0, 10).join('\n'), // First 10 lines of stack
+  });
   const campaignDocRef = db.collection("campaigns").doc(campaignId);
+
+  // Check participation limit BEFORE transaction (unless skipped for event mode)
+  // (Firestore transactions don't support queries, only document references)
+  // NOTE: In event mode, this check MUST be skipped because token chances are used instead
+  // Event mode uses token.remainingChances, not participationLimitPerUser
+  if (skipParticipationLimitCheck) {
+    // Skip participation limit check - used in event mode where token chances are the only limit
+    console.log("[Lottery] Skipping participation limit check (event mode)");
+  } else {
+    const campaignDoc = await campaignDocRef.get();
+    if (campaignDoc.exists) {
+      const campaignData = campaignDoc.data() as Campaign;
+      const participationLimit = campaignData.participationLimitPerUser || 0;
+      
+      // Only check limit if it's set (non-zero)
+      if (participationLimit > 0) {
+        const participantsQuery = db
+          .collection("participants")
+          .where("campaignId", "==", campaignId)
+          .where("userId", "==", user.uid);
+        const participantsSnap = await participantsQuery.get();
+        const participationCount = participantsSnap.size;
+        
+        // Check if user has reached the limit (>= because we're about to add one more)
+        if (participationCount >= participationLimit) {
+          throw new Error("PARTICIPATION_LIMIT_REACHED");
+        }
+      }
+    }
+  }
 
   // Check participation interval restriction BEFORE transaction
   // (Firestore transactions don't support queries, only document references)
@@ -145,177 +183,201 @@ export const runLotteryTransaction = async ({
     throw new Error(intervalError);
   }
 
-  return db.runTransaction(async (transaction) => {
-    const campaignDoc = await transaction.get(campaignDocRef);
-    if (!campaignDoc.exists)
-      throw new Error("キャンペーンデータが見つかりません。");
-    const campaignData = campaignDoc.data() as Campaign;
+  // Retry logic for transaction conflicts
+  let retryCount = 0;
+  const maxRetries = 5; // Increased retries for better conflict handling
 
-    const prizes = campaignData.prizes || [];
-    const consolationPrize = campaignData.consolationPrize
-      ? { ...campaignData.consolationPrize }
-      : null;
+  while (retryCount < maxRetries) {
+    try {
+      console.log(`[Lottery Transaction] Attempt ${retryCount + 1}/${maxRetries}`);
+      return await db.runTransaction(async (transaction) => {
+        const campaignDoc = await transaction.get(campaignDocRef);
+        if (!campaignDoc.exists)
+          throw new Error("キャンペーンデータが見つかりません。");
+        const campaignData = campaignDoc.data() as Campaign;
 
-    const hasAnyStock = [...prizes, consolationPrize].some(
-      (p) => p && (p.unlimitedStock || (p.stock || 0) > 0),
-    );
-    if (
-      !hasAnyStock &&
-      campaignData.outOfStockBehavior === "prevent_participation"
-    ) {
-      throw new Error("OUT_OF_STOCK");
-    }
+        const prizes = campaignData.prizes || [];
+        const consolationPrize = campaignData.consolationPrize
+          ? { ...campaignData.consolationPrize }
+          : null;
 
-    let wonPrize: Prize | null = null;
-    let isConsolationWin = false;
-    let assignedUrl: string | undefined = undefined;
-
-    const isOverallWinner =
-      Math.random() * 100 < (campaignData.overallWinProbability ?? 100);
-
-    if (isOverallWinner) {
-      let availablePrizes = prizes.filter(
-        (p) => p.unlimitedStock || (p.stock || 0) > 0,
-      );
-      if (campaignData.preventDuplicatePrizes) {
-        availablePrizes = availablePrizes.filter(
-          (p) => !alreadyWonPrizeIds.has(p.id),
+        const hasAnyStock = [...prizes, consolationPrize].some(
+          (p) => p && (p.unlimitedStock || (p.stock || 0) > 0),
         );
-      }
-
-      if (availablePrizes.length > 0) {
-        const totalAllocation = availablePrizes.reduce(
-          (sum, p) => sum + (p.probability || 0),
-          0,
-        );
-        if (totalAllocation > 0) {
-          let randomNum = Math.random() * totalAllocation;
-          for (const prize of availablePrizes) {
-            randomNum -= prize.probability || 0;
-            if (randomNum <= 0) {
-              wonPrize = prize;
-              break;
-            }
-          }
-        }
-      }
-
-      if (wonPrize) {
-        if (!wonPrize.unlimitedStock && wonPrize.type === "url") {
-          const urlStock = (wonPrize.urlStockList || [])
-            .map((s) => String(s).trim())
-            .filter(Boolean);
-          if (urlStock.length > 0) {
-            assignedUrl = urlStock.pop();
-            const prizeInMainArray = prizes.find((p) => p.id === wonPrize!.id);
-            if (prizeInMainArray) {
-              prizeInMainArray.urlStockList = urlStock;
-              prizeInMainArray.stock = urlStock.length;
-            }
-          } else {
-            wonPrize = null;
-            assignedUrl = undefined;
-          }
-        }
-      }
-    }
-
-    if (!wonPrize) {
-      const sourceConsolationPrize = campaignData.consolationPrize;
-      const isConfigured =
-        sourceConsolationPrize &&
-        typeof sourceConsolationPrize.title === "string" &&
-        sourceConsolationPrize.title.trim() !== "";
-
-      if (isConfigured) {
-        const hasStock =
-          sourceConsolationPrize.unlimitedStock === true ||
-          (typeof sourceConsolationPrize.stock === "number" &&
-            sourceConsolationPrize.stock > 0);
-
-        if (hasStock) {
-          wonPrize = { ...sourceConsolationPrize };
-          isConsolationWin = true;
-
-          if (!wonPrize.unlimitedStock && wonPrize.type === "url") {
-            const urlStock = (wonPrize.urlStockList || [])
-              .map((s) => String(s).trim())
-              .filter(Boolean);
-            if (urlStock.length > 0) {
-              assignedUrl = urlStock.pop();
-              if (consolationPrize) {
-                consolationPrize.urlStockList = urlStock;
-                consolationPrize.stock = urlStock.length;
-              }
-            } else {
-              wonPrize = null;
-              isConsolationWin = false;
-            }
-          }
-        }
-      }
-    }
-
-    const newParticipantRef = db.collection("participants").doc();
-    const participantPayload: Omit<Participant, "id" | "wonAt"> = {
-      campaignId: campaignId,
-      userId: user.uid,
-      authInfo: {
-        provider: user.providerData[0]?.providerId || "anonymous",
-        identifier: user.email || user.phoneNumber || user.uid,
-      },
-      prizeId: wonPrize ? wonPrize.id : "loss",
-      prizeDetails: wonPrize
-        ? JSON.parse(JSON.stringify(wonPrize))
-        : {
-            id: "loss",
-            title: "ハズレ",
-            rank: "-",
-            description: "",
-            imageUrl: "",
-            stock: 0,
-            unlimitedStock: true,
-            type: "url",
-          },
-      isConsolationPrize: isConsolationWin,
-      questionnaireAnswers: pendingAnswers,
-      couponUsedCount: 0,
-      couponUsageHistory: [],
-      ...(assignedUrl && { assignedUrl: assignedUrl }),
-    };
-    const wonAtDate = new Date();
-
-    transaction.set(newParticipantRef, {
-      ...participantPayload,
-      wonAt: firebase.firestore.FieldValue.serverTimestamp(),
-    });
-
-    if (wonPrize) {
-      if (isConsolationWin && consolationPrize) {
-        consolationPrize.winnersCount =
-          (consolationPrize.winnersCount || 0) + 1;
         if (
-          !consolationPrize.unlimitedStock &&
-          consolationPrize.type !== "url"
+          !hasAnyStock &&
+          campaignData.outOfStockBehavior === "prevent_participation"
         ) {
-          consolationPrize.stock = (consolationPrize.stock || 0) - 1;
+          throw new Error("OUT_OF_STOCK");
         }
-        transaction.update(campaignDocRef, { consolationPrize });
-      } else {
-        const prizeToUpdate = prizes.find((p) => p.id === wonPrize!.id);
-        if (prizeToUpdate) {
-          prizeToUpdate.winnersCount = (prizeToUpdate.winnersCount || 0) + 1;
-          if (!prizeToUpdate.unlimitedStock && prizeToUpdate.type !== "url") {
-            prizeToUpdate.stock = (prizeToUpdate.stock || 0) - 1;
+
+        let wonPrize: Prize | null = null;
+        let isConsolationWin = false;
+        let assignedUrl: string | undefined = undefined;
+
+        const isOverallWinner =
+          Math.random() * 100 < (campaignData.overallWinProbability ?? 100);
+
+        if (isOverallWinner) {
+          let availablePrizes = prizes.filter(
+            (p) => p.unlimitedStock || (p.stock || 0) > 0,
+          );
+          if (campaignData.preventDuplicatePrizes) {
+            availablePrizes = availablePrizes.filter(
+              (p) => !alreadyWonPrizeIds.has(p.id),
+            );
           }
-          transaction.update(campaignDocRef, { prizes });
+
+          if (availablePrizes.length > 0) {
+            const totalAllocation = availablePrizes.reduce(
+              (sum, p) => sum + (p.probability || 0),
+              0,
+            );
+            if (totalAllocation > 0) {
+              let randomNum = Math.random() * totalAllocation;
+              for (const prize of availablePrizes) {
+                randomNum -= prize.probability || 0;
+                if (randomNum <= 0) {
+                  wonPrize = prize;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (wonPrize) {
+            if (!wonPrize.unlimitedStock && wonPrize.type === "url") {
+              const urlStock = (wonPrize.urlStockList || [])
+                .map((s) => String(s).trim())
+                .filter(Boolean);
+              if (urlStock.length > 0) {
+                assignedUrl = urlStock.pop();
+                const prizeInMainArray = prizes.find((p) => p.id === wonPrize!.id);
+                if (prizeInMainArray) {
+                  prizeInMainArray.urlStockList = urlStock;
+                  prizeInMainArray.stock = urlStock.length;
+                }
+              } else {
+                wonPrize = null;
+                assignedUrl = undefined;
+              }
+            }
+          }
         }
+
+        if (!wonPrize) {
+          const sourceConsolationPrize = campaignData.consolationPrize;
+          const isConfigured =
+            sourceConsolationPrize &&
+            typeof sourceConsolationPrize.title === "string" &&
+            sourceConsolationPrize.title.trim() !== "";
+
+          if (isConfigured) {
+            const hasStock =
+              sourceConsolationPrize.unlimitedStock === true ||
+              (typeof sourceConsolationPrize.stock === "number" &&
+                sourceConsolationPrize.stock > 0);
+
+            if (hasStock) {
+              wonPrize = { ...sourceConsolationPrize };
+              isConsolationWin = true;
+
+              if (!wonPrize.unlimitedStock && wonPrize.type === "url") {
+                const urlStock = (wonPrize.urlStockList || [])
+                  .map((s) => String(s).trim())
+                  .filter(Boolean);
+                if (urlStock.length > 0) {
+                  assignedUrl = urlStock.pop();
+                  if (consolationPrize) {
+                    consolationPrize.urlStockList = urlStock;
+                    consolationPrize.stock = urlStock.length;
+                  }
+                } else {
+                  wonPrize = null;
+                  isConsolationWin = false;
+                }
+              }
+            }
+          }
+        }
+
+        const newParticipantRef = db.collection("participants").doc();
+        const participantPayload: Omit<Participant, "id" | "wonAt"> = {
+          campaignId: campaignId,
+          userId: user.uid,
+          authInfo: {
+            provider: user.providerData[0]?.providerId || "anonymous",
+            identifier: user.email || user.phoneNumber || user.uid,
+          },
+          prizeId: wonPrize ? wonPrize.id : "loss",
+          prizeDetails: wonPrize
+            ? JSON.parse(JSON.stringify(wonPrize))
+            : {
+                id: "loss",
+                title: "ハズレ",
+                rank: "-",
+                description: "",
+                imageUrl: "",
+                stock: 0,
+                unlimitedStock: true,
+                type: "url",
+              },
+          isConsolationPrize: isConsolationWin,
+          questionnaireAnswers: pendingAnswers,
+          couponUsedCount: 0,
+          couponUsageHistory: [],
+          ...(assignedUrl && { assignedUrl: assignedUrl }),
+        };
+        const wonAtDate = new Date();
+
+        transaction.set(newParticipantRef, {
+          ...participantPayload,
+          wonAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+
+        if (wonPrize) {
+          if (isConsolationWin && consolationPrize) {
+            consolationPrize.winnersCount =
+              (consolationPrize.winnersCount || 0) + 1;
+            if (
+              !consolationPrize.unlimitedStock &&
+              consolationPrize.type !== "url"
+            ) {
+              consolationPrize.stock = (consolationPrize.stock || 0) - 1;
+            }
+            transaction.update(campaignDocRef, { consolationPrize });
+          } else {
+            const prizeToUpdate = prizes.find((p) => p.id === wonPrize!.id);
+            if (prizeToUpdate) {
+              prizeToUpdate.winnersCount = (prizeToUpdate.winnersCount || 0) + 1;
+              if (!prizeToUpdate.unlimitedStock && prizeToUpdate.type !== "url") {
+                prizeToUpdate.stock = (prizeToUpdate.stock || 0) - 1;
+              }
+              transaction.update(campaignDocRef, { prizes });
+            }
+          }
+        }
+        return {
+          ...participantPayload,
+          id: newParticipantRef.id,
+          wonAt: wonAtDate,
+        } as Participant;
+      });
+    } catch (err: any) {
+      retryCount++;
+      // Retry on failed-precondition errors (transaction conflicts)
+      if (err.code === "failed-precondition" && retryCount < maxRetries) {
+        const backoffMs = 100 * Math.pow(2, retryCount - 1); // Exponential backoff: 100ms, 200ms, 400ms, 800ms
+        console.warn(`[Lottery Transaction] Conflict detected, retrying (${retryCount}/${maxRetries}) after ${backoffMs}ms...`);
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
+        continue;
       }
+      // Re-throw if max retries reached or different error
+      console.error(`[Lottery Transaction] Failed after ${retryCount} attempts:`, err);
+      throw err;
     }
-    return {
-      ...participantPayload,
-      id: newParticipantRef.id,
-      wonAt: wonAtDate,
-    } as Participant;
-  });
+  }
+  
+  // This should never be reached, but TypeScript needs it
+  throw new Error("抽選に失敗しました。もう一度お試しください。");
 };

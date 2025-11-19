@@ -40,6 +40,10 @@ const EventParticipationPage: React.FC = () => {
   >(null);
   const [chancesFromToken, setChancesFromToken] = useState(1);
   const initializedRef = useRef(false);
+  const isProcessingRef = useRef(false);
+  const tokenUnsubscribeRef = useRef<(() => void) | null>(null);
+  const isTransactionInProgressRef = useRef(false); // Prevent listener updates during transaction
+  const buttonRef = useRef<HTMLButtonElement | null>(null); // Ref to track button element
 
   const { user } = useAuth();
   const [isUserLoaded, setIsUserLoaded] = useState(false);
@@ -192,28 +196,75 @@ const EventParticipationPage: React.FC = () => {
           return;
         }
 
-        if (!tokenDoc.exists || tokenData.expires.toDate() < new Date()) {
+        if (!tokenDoc.exists) {
           setError("このQRコードは無効か、期限切れです。");
           return;
         }
-        const expiresAt = tokenData.expires.toDate();
+
+        const expiresAt = tokenData.expires?.toDate ? tokenData.expires.toDate() : new Date(tokenData.expires);
+        if (expiresAt < new Date()) {
+          setError("このQRコードは無効か、期限切れです。");
+          return;
+        }
+        
         const initialRemaining = Math.max(
           0,
           Math.round((expiresAt.getTime() - Date.now()) / 1000),
         );
+        
+        // Always read the latest remainingChances from database
         const totalRemaining =
           typeof tokenData.remainingChances === "number"
             ? tokenData.remainingChances
-            : tokenData.chances || 1;
+            : (typeof tokenData.chances === "number" ? tokenData.chances : 1);
+            
+        console.log(`[Initialization] Token loaded: remainingChances = ${totalRemaining}, chances = ${tokenData.chances}`);
+        
         if (totalRemaining <= 0) {
           setError(
             "このQRコードの参加可能回数は終了しました。モニターで新しいQRコードをスキャンしてください。",
           );
           return;
         }
+        
         setTokenExpiresAt(expiresAt);
         setTimeLeft(Math.min(EVENT_TOKEN_DISPLAY_LIMIT, initialRemaining));
         setChancesFromToken(totalRemaining);
+
+        // Clean up any existing listener
+        if (tokenUnsubscribeRef.current) {
+          tokenUnsubscribeRef.current();
+          tokenUnsubscribeRef.current = null;
+        }
+
+        // Set up a real-time listener to keep chancesFromToken in sync with database
+        const unsubscribe = tokenRef.onSnapshot((doc) => {
+          // Don't update state if a transaction is in progress - let the transaction handle state updates
+          if (isTransactionInProgressRef.current) {
+            console.log(`[Listener] Ignoring update - transaction in progress`);
+            return;
+          }
+          
+          if (doc.exists) {
+            const data = doc.data();
+            const latestRemaining =
+              typeof data?.remainingChances === "number"
+                ? data.remainingChances
+                : (typeof data?.chances === "number" ? data.chances : 1);
+            console.log(`[Listener] Token updated in DB: remainingChances = ${latestRemaining}`);
+            setChancesFromToken((prev) => {
+              if (prev !== latestRemaining) {
+                console.log(`[Listener] Syncing state: ${prev} -> ${latestRemaining}`);
+              }
+              return latestRemaining;
+            });
+          }
+        }, (err) => {
+          console.error("Token listener error:", err);
+        });
+
+        // Store unsubscribe function to clean up later
+        tokenUnsubscribeRef.current = unsubscribe;
 
         setEventState("ready");
       } catch (err: any) {
@@ -229,6 +280,15 @@ const EventParticipationPage: React.FC = () => {
     };
 
     initialize();
+    
+    // Cleanup function - unsubscribe from token listener when component unmounts or dependencies change
+    return () => {
+      if (tokenUnsubscribeRef.current) {
+        console.log("[Cleanup] Unsubscribing from token listener");
+        tokenUnsubscribeRef.current();
+        tokenUnsubscribeRef.current = null;
+      }
+    };
   }, [isUserLoaded, user, campaignId, token]);
 
   // Countdown timer effect
@@ -257,48 +317,122 @@ const EventParticipationPage: React.FC = () => {
   }, [tokenExpiresAt, eventState]);
 
   const handleLotteryStart = useCallback(async () => {
-    if (!campaign || !auth.currentUser || !campaignId || !token) return;
+    // Log the call stack to identify if this is being called automatically
+    // Use console.log with a very visible prefix
+    console.log("========== [handleLotteryStart] CALLED ==========", {
+      eventState,
+      chancesFromToken,
+      isProcessing: isProcessingRef.current,
+      timeLeft,
+      timestamp: new Date().toISOString(),
+    });
+    console.log("[handleLotteryStart] Stack trace:", new Error().stack);
+    
+    if (!campaign || !auth.currentUser || !campaignId || !token) {
+      console.warn("[handleLotteryStart] Blocked: missing required data");
+      return;
+    }
     if (timeLeft === 0) {
       setError("QRコードの有効期限が切れました。");
       return;
     }
-    if (chancesFromToken <= 0) {
-      setError(
-        "このQRコードの参加可能回数は終了しました。モニターで新しいQRコードをスキャンしてください。",
-      );
+    // Prevent double-clicks and automatic execution by checking state and ref
+    // This function should ONLY be called from user button clicks, never automatically
+    if (eventState !== "ready" || isProcessingRef.current) {
+      console.warn("[handleLotteryStart] Blocked:", { eventState, isProcessing: isProcessingRef.current });
       return;
     }
 
+    // Set processing flag immediately to prevent concurrent transactions
+    isProcessingRef.current = true;
+    isTransactionInProgressRef.current = true; // Block listener updates during transaction
+    // Immediately set to participating to prevent double-clicks
     setEventState("participating");
     setMultiplePrizeResults(null);
+    setErrorMessage(null);
+    
     try {
       const tokenRef = db
         .collection("campaigns")
         .doc(campaignId)
         .collection("eventTokens")
         .doc(token);
-      let nextRemainingChances = chancesFromToken;
+      let nextRemainingChances = 0;
+      let actualRemainingBefore = 0;
+      let retryCount = 0;
+      const maxRetries = 5; // Increased retries for better conflict handling
 
-      await db.runTransaction(async (transaction: any) => {
-        const tokenDoc = await transaction.get(tokenRef);
-        if (!tokenDoc.exists || tokenDoc.data().expires.toDate() < new Date())
-          throw new Error("このQRコードは無効か、期限切れです。");
-        const tokenData = tokenDoc.data();
-        const remaining =
-          typeof tokenData.remainingChances === "number"
-            ? tokenData.remainingChances
-            : tokenData.chances || 1;
-        if (remaining <= 0) {
-          throw new Error("NO_CHANCES_LEFT");
+      // Retry transaction in case of conflicts
+      while (retryCount < maxRetries) {
+        try {
+          await db.runTransaction(async (transaction: any) => {
+            const tokenDoc = await transaction.get(tokenRef);
+            if (!tokenDoc.exists) {
+              throw new Error("このQRコードは無効か、期限切れです。");
+            }
+            const tokenData = tokenDoc.data();
+            const expiresAt = tokenData.expires?.toDate ? tokenData.expires.toDate() : new Date(tokenData.expires);
+            if (expiresAt < new Date()) {
+              throw new Error("このQRコードは無効か、期限切れです。");
+            }
+            
+            // Always read the LATEST remainingChances from database
+            actualRemainingBefore =
+              typeof tokenData.remainingChances === "number"
+                ? tokenData.remainingChances
+                : (typeof tokenData.chances === "number" ? tokenData.chances : 1);
+            
+            console.log(`[Token Transaction] Attempt ${retryCount + 1}/${maxRetries}: Reading from DB: remainingChances = ${actualRemainingBefore}`);
+            
+            // Double-check: if somehow we have 0 or less, throw error
+            if (actualRemainingBefore <= 0) {
+              console.warn(`[Token Transaction] No chances left! remainingChances = ${actualRemainingBefore}`);
+              throw new Error("NO_CHANCES_LEFT");
+            }
+            
+            nextRemainingChances = actualRemainingBefore - 1;
+            console.log(`[Token Transaction] Updating: ${actualRemainingBefore} -> ${nextRemainingChances}`);
+            
+            // Update token with new remaining chances - this is atomic
+            transaction.update(tokenRef, {
+              remainingChances: nextRemainingChances,
+              lastUsedAt: FieldValue.serverTimestamp(),
+              ...(nextRemainingChances <= 0 && { depletedAt: FieldValue.serverTimestamp() }),
+            });
+          });
+          
+          // Transaction succeeded, break out of retry loop
+          console.log(`[Token Transaction] Success after ${retryCount + 1} attempt(s)`);
+          break;
+        } catch (err: any) {
+          retryCount++;
+          // If it's a transaction conflict, retry
+          if (err.code === "failed-precondition" && retryCount < maxRetries) {
+            const backoffMs = 100 * Math.pow(2, retryCount - 1); // Exponential backoff
+            console.warn(`[Token Transaction] Conflict detected, retrying (${retryCount}/${maxRetries}) after ${backoffMs}ms...`);
+            await new Promise(resolve => setTimeout(resolve, backoffMs));
+            continue;
+          }
+          // For other errors or max retries reached, throw
+          console.error(`[Token Transaction] Failed after ${retryCount} attempts:`, err);
+          throw err;
         }
-        nextRemainingChances = remaining - 1;
-        transaction.update(tokenRef, {
-          remainingChances: nextRemainingChances,
-          lastUsedAt: FieldValue.serverTimestamp(),
-          ...(remaining - 1 <= 0 && { depletedAt: FieldValue.serverTimestamp() }),
-        });
-      });
-      setChancesFromToken(nextRemainingChances);
+      }
+      
+      // Update state immediately after successful transaction - this is critical
+      // Always use the value from the transaction, not from previous state
+      console.log(`[State Update] Transaction completed: ${actualRemainingBefore} -> ${nextRemainingChances}`);
+      if (nextRemainingChances < 0) {
+        console.error("[State Update] Invalid remaining chances from transaction:", nextRemainingChances);
+        setChancesFromToken(0);
+      } else {
+        // Directly set the value from transaction - this is the source of truth
+        console.log(`[State Update] Setting chancesFromToken to ${nextRemainingChances}`);
+        setChancesFromToken(nextRemainingChances);
+      }
+      
+      // Allow listener to update again after we've set the state from transaction
+      isTransactionInProgressRef.current = false;
 
       // Get last participation time for interval check
       let lastParticipationTime: Date | null = null;
@@ -325,13 +459,52 @@ const EventParticipationPage: React.FC = () => {
         }
       }
 
-      const result = await runLotteryTransaction({
+      // Run lottery transaction - if this fails, we should NOT consume the token chance
+      // So we do this AFTER the token transaction succeeds
+      // In event mode, we skip the normal participation limit check since we use token chances instead
+      console.log("[handleLotteryStart] About to call runLotteryTransaction", {
         campaignId,
-        user: auth.currentUser,
-        alreadyWonPrizeIds: new Set(),
-        pendingAnswers: {},
-        lastParticipationTime,
+        userId: auth.currentUser?.uid,
+        remainingChances: nextRemainingChances,
+        stack: new Error().stack,
       });
+      let result: Participant;
+      try {
+        result = await runLotteryTransaction({
+          campaignId,
+          user: auth.currentUser,
+          alreadyWonPrizeIds: new Set(),
+          pendingAnswers: {},
+          lastParticipationTime,
+          skipParticipationLimitCheck: true, // Event mode uses token chances, not normal participation limits
+        });
+      } catch (lotteryError: any) {
+        console.error("[Lottery] Lottery transaction failed:", lotteryError);
+        // If lottery fails, we need to ROLLBACK the token consumption
+        // Re-increment the remainingChances
+        try {
+          // Temporarily allow listener updates during rollback, but block them
+          isTransactionInProgressRef.current = true;
+          await db.runTransaction(async (rollbackTransaction: any) => {
+            const tokenDoc = await rollbackTransaction.get(tokenRef);
+            if (tokenDoc.exists) {
+              const currentRemaining = tokenDoc.data().remainingChances || 0;
+              rollbackTransaction.update(tokenRef, {
+                remainingChances: currentRemaining + 1,
+              });
+              console.log(`[Rollback] Restored token chance: ${currentRemaining} -> ${currentRemaining + 1}`);
+            }
+          });
+          // Update state to reflect rollback
+          setChancesFromToken((prev) => prev + 1);
+          isTransactionInProgressRef.current = false;
+        } catch (rollbackError) {
+          console.error("[Rollback] Failed to rollback token consumption:", rollbackError);
+          isTransactionInProgressRef.current = false;
+        }
+        // Re-throw the lottery error
+        throw lotteryError;
+      }
 
       const resultRef = db
         .collection("campaigns")
@@ -355,47 +528,111 @@ const EventParticipationPage: React.FC = () => {
 
       setPrizeResult(result.prizeDetails);
 
+      // After showing result, transition back to ready state so user can draw again if chances remain
+      // The state chancesFromToken is already updated above, so it will be correct when ready state is shown
+      console.log(`[State Transition] Moving to fading, remaining chances: ${nextRemainingChances}`);
       setTimeout(() => {
         setEventState("fading");
       }, 3000);
+      
+      // After fading, go to result, then after countdown, user is redirected
+      // But if they somehow stay, we need to ensure state is correct
     } catch (err: any) {
       console.error("Lottery error:", err);
+      // Always reset processing flags on error
+      isProcessingRef.current = false;
+      isTransactionInProgressRef.current = false;
       if (err.message === "NO_CHANCES_LEFT") {
         setError(
           "このQRコードの参加可能回数は終了しました。モニターで新しいQRコードをスキャンしてください。",
         );
+        // Update state to 0 when chances are depleted
+        setChancesFromToken(0);
+      } else if (err.message === "PARTICIPATION_LIMIT_REACHED") {
+        // In event mode, this should not happen, but if it does, show a more appropriate message
+        // The token chances should be the only limit in event mode
+        console.warn("[Event Mode] PARTICIPATION_LIMIT_REACHED error detected - this should not happen in event mode");
+        setError(
+          "抽選に失敗しました。モニターで新しいQRコードをスキャンしてください。",
+        );
       } else {
         setError(err.message || "抽選に失敗しました。");
       }
+      // Always reset to ready state on error so user can try again or see the error
+      setEventState("ready");
     }
-  }, [campaign, campaignId, token, timeLeft, chancesFromToken]);
+  }, [campaign, campaignId, token, timeLeft, eventState]);
 
   useEffect(() => {
     if (eventState === "fading") {
       const timer = setTimeout(() => {
         setEventState("result");
         sessionStorage.setItem("eventParticipationDone", "true");
+        // Reset processing flag when transitioning to result
+        // Note: isTransactionInProgressRef should already be false at this point
+        isProcessingRef.current = false;
       }, 700);
       return () => clearTimeout(timer);
     }
   }, [eventState]);
 
+  // Use a ref to track if we've already set up the result state handler for the current result state
+  // This prevents the effect from running multiple times when chancesFromToken changes
+  const resultStateHandledRef = useRef(false);
+  // Use a ref to store the chances value when entering result state
+  const chancesAtResultRef = useRef<number | null>(null);
+
   useEffect(() => {
     if (eventState === "result") {
-      setRedirectCountdown(10);
-      const timer = setInterval(() => {
-        setRedirectCountdown((prev) => {
-          if (prev <= 1) {
-            clearInterval(timer);
-            navigate(`/campaign/${campaignId}`);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-      return () => clearInterval(timer);
+      // Only handle result state once per transition to "result"
+      // This prevents re-running when chancesFromToken changes
+      if (resultStateHandledRef.current) {
+        return;
+      }
+      resultStateHandledRef.current = true;
+      
+      // Capture the current chancesFromToken value at the time of entering result state
+      // Store it in a ref so we can use it later without depending on chancesFromToken
+      chancesAtResultRef.current = chancesFromToken;
+      const currentChances = chancesFromToken;
+      
+      console.log(`[Result State] Entered result state with ${currentChances} chances remaining`);
+      
+      if (currentChances <= 0) {
+        setRedirectCountdown(10);
+        const timer = setInterval(() => {
+          setRedirectCountdown((prev) => {
+            if (prev <= 1) {
+              clearInterval(timer);
+              navigate(`/campaign/${campaignId}`);
+              return 0;
+            }
+            return prev - 1;
+          });
+        }, 1000);
+        return () => clearInterval(timer);
+      } else {
+        // If chances remain, allow user to continue - transition back to ready after showing result
+        // DO NOT automatically start the next draw - user must click the button
+        const timer = setTimeout(() => {
+          console.log(`[State] Returning to ready state, remaining chances: ${currentChances}`);
+          // Ensure processing flags are reset before allowing next draw
+          isProcessingRef.current = false;
+          isTransactionInProgressRef.current = false;
+          setEventState("ready");
+          setPrizeResult(null);
+          // Reset the flag when transitioning back to ready so next result state can be handled
+          resultStateHandledRef.current = false;
+          chancesAtResultRef.current = null;
+        }, 5000); // Show result for 5 seconds, then allow next draw
+        return () => clearTimeout(timer);
+      }
+    } else {
+      // Reset the flag when we're not in result state
+      resultStateHandledRef.current = false;
+      chancesAtResultRef.current = null;
     }
-  }, [eventState, navigate, campaignId]);
+  }, [eventState, navigate, campaignId]); // Removed chancesFromToken to prevent re-running when it changes
 
   const needsAuth = useMemo(() => {
     if (eventState !== "ready" || !campaign) return false;
@@ -449,9 +686,38 @@ const EventParticipationPage: React.FC = () => {
               準備ができたらボタンを押してスタート！
             </p>
             <button
-              onClick={handleLotteryStart}
+              type="button" // Explicitly set to prevent form submission behavior
+              ref={buttonRef}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                console.log("========== [Button] CLICKED ==========", {
+                  eventState,
+                  chancesFromToken,
+                  isProcessing: isProcessingRef.current,
+                  timeLeft,
+                  isTrusted: e.isTrusted, // Browser-generated events have isTrusted: false
+                  timestamp: new Date().toISOString(),
+                });
+                // Double-check conditions before calling - use ref to prevent race conditions
+                // Only allow user-initiated clicks (isTrusted: true)
+                if (e.isTrusted && eventState === "ready" && !isProcessingRef.current && chancesFromToken > 0 && timeLeft !== 0) {
+                  console.log("[Button] Conditions met, calling handleLotteryStart");
+                  handleLotteryStart();
+                } else {
+                  console.warn("========== [Button] CLICK BLOCKED ==========", { 
+                    isTrusted: e.isTrusted,
+                    eventState, 
+                    isProcessing: isProcessingRef.current,
+                    chancesFromToken, 
+                    timeLeft 
+                  });
+                }
+              }}
+              disabled={eventState !== "ready" || isProcessingRef.current || chancesFromToken <= 0 || timeLeft === 0}
+              autoFocus={false} // Prevent automatic focus
               style={{ backgroundColor: themeColor }}
-              className="w-full max-w-sm mx-auto text-white font-bold py-6 px-8 rounded-full text-2xl transition-all duration-300 ease-in-out shadow-lg hover:shadow-2xl transform hover:-translate-y-1"
+              className="w-full max-w-sm mx-auto text-white font-bold py-6 px-8 rounded-full text-2xl transition-all duration-300 ease-in-out shadow-lg hover:shadow-2xl transform hover:-translate-y-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
             >
               {fullButtonText}
             </button>
@@ -575,7 +841,17 @@ const EventParticipationPage: React.FC = () => {
                   ),
                 )}
               </div>
-              {countdownText}
+              {chancesFromToken > 0 ? (
+                <p className="text-slate-600 text-sm mt-6">
+                  残り
+                  <span className="font-bold mx-1" style={{ color: themeColor }}>
+                    {chancesFromToken}
+                  </span>
+                  回抽選できます。しばらくすると次の抽選が可能になります。
+                </p>
+              ) : (
+                countdownText
+              )}
             </div>
           );
         }
@@ -621,7 +897,17 @@ const EventParticipationPage: React.FC = () => {
                 </p>
               </>
             )}
-            {countdownText}
+            {chancesFromToken > 0 ? (
+              <p className="text-slate-600 text-sm mt-6">
+                残り
+                <span className="font-bold mx-1" style={{ color: themeColor }}>
+                  {chancesFromToken}
+                </span>
+                回抽選できます。しばらくすると次の抽選が可能になります。
+              </p>
+            ) : (
+              countdownText
+            )}
           </div>
         );
     }
@@ -657,3 +943,4 @@ const EventParticipationPage: React.FC = () => {
 };
 
 export default EventParticipationPage;
+
