@@ -1407,12 +1407,36 @@ const CampaignEdit: React.FC = () => {
 
         winners.forEach((winner) => {
           if (prize.type === "e-coupon") {
-            const usageHistory = (winner.couponUsageHistory || []).filter(
+            let usageHistory = (winner.couponUsageHistory || []).filter(
               (history) => history,
             );
+            
+            // Apply date filter to usage history if date range is set
+            if (hasCompleteDateRange && graphStartDate && graphEndDate) {
+              const startOfDay = new Date(graphStartDate);
+              startOfDay.setHours(0, 0, 0, 0);
+              const endOfDay = new Date(graphEndDate);
+              endOfDay.setHours(23, 59, 59, 999);
+              
+              usageHistory = usageHistory.filter((history) => {
+                if (!history.usedAt) return false;
+                // Handle Firestore Timestamp or Date object
+                const usedAt = history.usedAt?.toDate 
+                  ? history.usedAt.toDate() 
+                  : history.usedAt instanceof Date 
+                    ? history.usedAt 
+                    : new Date(history.usedAt);
+                return usedAt >= startOfDay && usedAt <= endOfDay;
+              });
+            }
+            
             const recordedUsage = usageHistory.length;
+            // When date filter is applied, only use filtered usage history count
+            // Otherwise, use the maximum of recorded and reported usage
             const reportedUsage = winner.couponUsedCount || 0;
-            const usageCount = Math.max(recordedUsage, reportedUsage);
+            const usageCount = hasCompleteDateRange
+              ? recordedUsage  // Only count filtered usage when date range is set
+              : Math.max(recordedUsage, reportedUsage);
 
             totalUsed += usageCount;
 
@@ -1424,12 +1448,15 @@ const CampaignEdit: React.FC = () => {
               );
             });
 
-            const untrackedUsage = usageCount - recordedUsage;
-            if (untrackedUsage > 0) {
-              storeUsage.set(
-                "店舗未設定",
-                (storeUsage.get("店舗未設定") || 0) + untrackedUsage,
-              );
+            // Only add untracked usage when date filter is not applied
+            if (!hasCompleteDateRange) {
+              const untrackedUsage = usageCount - recordedUsage;
+              if (untrackedUsage > 0) {
+                storeUsage.set(
+                  "店舗未設定",
+                  (storeUsage.get("店舗未設定") || 0) + untrackedUsage,
+                );
+              }
             }
           } else if (prize.type === "mail-delivery") {
             if (
