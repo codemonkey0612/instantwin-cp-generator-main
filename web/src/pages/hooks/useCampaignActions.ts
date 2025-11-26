@@ -430,10 +430,26 @@ export const useCampaignActions = ({
     }
   };
 
-  // FIX: Refactored to not take arguments and use state from closure scope.
   const handleApprovalFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!campaign || !campaignId || !user) return;
+
+    // Validate required file fields before submitting.
+    // If a required file-type field does not have an uploaded URL in approvalFormData,
+    // we prevent submission and show an error so that "ファイルなし" 状態の申請が届かないようにする。
+    const requiredFileFields =
+      (campaign.approvalFormFields || []).filter(
+        (field) => field.type === "file" && field.required,
+      ) || [];
+
+    const missingFiles = requiredFileFields.filter(
+      (field) => !formState.approvalFormData[field.id],
+    );
+
+    if (missingFiles.length > 0) {
+      setApprovalFormError("必須の画像がアップロードされていない項目があります。再度ご確認ください。");
+      return;
+    }
 
     setApprovalFormError(null);
     setIsSubmittingApproval(true);
@@ -460,7 +476,6 @@ export const useCampaignActions = ({
     }
   };
 
-  // FIX: Added missing function
   const handleApprovalFileUpload = async (file: File, fieldId: string) => {
     if (!campaignId || !user) return;
 

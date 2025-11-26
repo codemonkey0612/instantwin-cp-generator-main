@@ -89,7 +89,15 @@ const ApprovalFormModal: React.FC<ApprovalFormModalProps> = ({
               ))}
               {approvalFormError && <p className="text-sm text-red-600 text-center">{approvalFormError}</p>}
               <div className="pt-4 flex justify-end">
-                <button type="submit" disabled={isSubmittingApproval} style={{ backgroundColor: 'var(--theme-color, #4F46E5)' }} className="px-6 py-2.5 text-white font-semibold rounded-lg hover:opacity-90 disabled:bg-slate-300 flex items-center">
+                <button
+                  type="submit"
+                  disabled={
+                    isSubmittingApproval ||
+                    Object.values(isUploadingApprovalFile || {}).some(Boolean)
+                  }
+                  style={{ backgroundColor: 'var(--theme-color, #4F46E5)' }}
+                  className="px-6 py-2.5 text-white font-semibold rounded-lg hover:opacity-90 disabled:bg-slate-300 flex items-center"
+                >
                   {isSubmittingApproval ? <Spinner size="sm" className="mr-2"/> : '申請する'}
                 </button>
               </div>
